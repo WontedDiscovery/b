@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Web Browser</string>
+    <string name="url_hint">Enter URL or search</string>
+    <string name="back_desc">Back</string>
+    <string name="forward_desc">Forward</string>
+    <string name="reload_desc">Reload</string>
+    <string name="cannot_open_link">No app can open this link</string>
+</resources>
