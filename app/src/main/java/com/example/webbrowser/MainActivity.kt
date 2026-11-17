@@ -1,18 +1,20 @@
 package com.example.webbrowser
 
+import android.app.Dialog
 import android.content.ActivityNotFoundException
 import android.content.Intent
 import android.content.res.Configuration
 import android.graphics.Bitmap
 import android.graphics.Color
-import android.graphics.RenderEffect
-import android.graphics.Shader
-import android.graphics.drawable.GradientDrawable
+import android.graphics.drawable.ColorDrawable
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.view.Gravity
+import android.view.KeyEvent
 import android.view.View
 import android.view.ViewGroup
+import android.view.Window
 import android.view.WindowManager
 import android.view.inputmethod.EditorInfo
 import android.view.inputmethod.InputMethodManager
@@ -22,6 +24,7 @@ import android.webkit.WebView
 import android.webkit.WebViewClient
 import android.widget.EditText
 import android.widget.FrameLayout
+import android.widget.LinearLayout
 import android.widget.ProgressBar
 import android.widget.TextView
 import android.widget.Toast
@@ -34,15 +37,13 @@ import androidx.core.view.WindowInsetsCompat
 class MainActivity : AppCompatActivity() {
 
     private lateinit var root: FrameLayout
-    private lateinit var webCard: FrameLayout
     private lateinit var webView: WebView
     private lateinit var progressBar: ProgressBar
-    private lateinit var glassBar: FrameLayout
-    private lateinit var glassSheen: View
-    private lateinit var glowLeft: View
-    private lateinit var glowRight: View
-    private lateinit var blobTop: View
-    private lateinit var blobBottom: View
+
+    // 懸浮在網頁上方的磨砂玻璃工具列（獨立視窗，系統才能模糊它後方的網頁）
+    private var glassDialog: Dialog? = null
+    private lateinit var glassRoot: LinearLayout
+    private lateinit var glassEdge: View
     private lateinit var urlBar: EditText
     private lateinit var btnBack: TextView
     private lateinit var btnForward: TextView
@@ -52,12 +53,15 @@ class MainActivity : AppCompatActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        // 內容延伸到狀態列與導覽列後方，讓玻璃工具列可以貼近螢幕邊緣
+        // 網頁延伸到整個螢幕；鍵盤出現時不讓網頁跟著縮放
         WindowCompat.setDecorFitsSystemWindows(window, false)
-        window.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE)
+        window.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_NOTHING)
         setContentView(R.layout.activity_main)
 
-        bindViews()
+        root = findViewById(R.id.root)
+        webView = findViewById(R.id.webView)
+        progressBar = findViewById(R.id.progressBar)
+
         isNight = (resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK) ==
             Configuration.UI_MODE_NIGHT_YES
 
@@ -68,10 +72,10 @@ class MainActivity : AppCompatActivity() {
             isAppearanceLightNavigationBars = !isNight
         }
 
-        applyGlassStyle()
-        applyWindowInsets()
+        root.setBackgroundColor(if (isNight) Color.parseColor("#1C1C1E") else Color.WHITE)
+        applyStatusBarInset()
         setupWebView()
-        setupControls()
+        setupGlassBar()
         setupBackNavigation()
 
         // 旋轉螢幕等情況下還原先前的頁面；否則載入首頁
@@ -83,110 +87,79 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun bindViews() {
-        root = findViewById(R.id.root)
-        webCard = findViewById(R.id.webCard)
-        webView = findViewById(R.id.webView)
-        progressBar = findViewById(R.id.progressBar)
-        glassBar = findViewById(R.id.glassBar)
-        glassSheen = findViewById(R.id.glassSheen)
-        glowLeft = findViewById(R.id.glowLeft)
-        glowRight = findViewById(R.id.glowRight)
-        blobTop = findViewById(R.id.blobTop)
-        blobBottom = findViewById(R.id.blobBottom)
-        urlBar = findViewById(R.id.urlBar)
-        btnBack = findViewById(R.id.btnBack)
-        btnForward = findViewById(R.id.btnForward)
-        btnReload = findViewById(R.id.btnReload)
-    }
-
-    /** 設定液態玻璃風格：背景漸層、光斑、玻璃質感與文字顏色 */
-    private fun applyGlassStyle() {
-        // 背景漸層
-        val wallpaper = if (isNight) {
-            intArrayOf(Color.parseColor("#0B1020"), Color.parseColor("#1B1036"), Color.parseColor("#120A1F"))
-        } else {
-            intArrayOf(Color.parseColor("#E6F0FF"), Color.parseColor("#F3E9FF"), Color.parseColor("#FFEAF3"))
-        }
-        root.background = GradientDrawable(GradientDrawable.Orientation.TL_BR, wallpaper)
-
-        // 背景光斑：玻璃下方的彩色光暈（Android 12 以上會再模糊）
-        blobTop.background = glow(if (isNight) "#7C3AED" else "#FF9ED8", dp(120).toFloat(), 0.55f)
-        blobBottom.background = glow(if (isNight) "#0EA5E9" else "#7FD8FF", dp(140).toFloat(), 0.6f)
-        blur(blobTop, dp(40).toFloat())
-        blur(blobBottom, dp(40).toFloat())
-
-        // 網頁卡片：圓角
-        webCard.background = GradientDrawable().apply {
-            setColor(if (isNight) Color.parseColor("#1C1C1E") else Color.WHITE)
-            setCornerRadius(dp(28).toFloat())
-        }
-        webCard.clipToOutline = true
-
-        // 玻璃工具列：半透明填色 + 高光邊框
-        glassBar.background = GradientDrawable().apply {
-            setColor(if (isNight) Color.parseColor("#55101018") else Color.parseColor("#59FFFFFF"))
-            setCornerRadius(dp(30).toFloat())
-            setStroke(dp(1), if (isNight) Color.parseColor("#40FFFFFF") else Color.parseColor("#B3FFFFFF"))
-        }
-        glassBar.clipToOutline = true
-
-        // 玻璃表面的反光（上半部較亮）
-        glassSheen.background = GradientDrawable(
-            GradientDrawable.Orientation.TOP_BOTTOM,
-            intArrayOf(
-                Color.parseColor(if (isNight) "#2EFFFFFF" else "#66FFFFFF"),
-                Color.parseColor("#00FFFFFF")
-            )
-        ).apply { setCornerRadius(dp(30).toFloat()) }
-
-        // 玻璃內側的彩色光暈
-        glowLeft.background = glow(if (isNight) "#A78BFA" else "#FF8AD8", dp(55).toFloat(), 0.8f)
-        glowRight.background = glow(if (isNight) "#38BDF8" else "#6EE7F9", dp(55).toFloat(), 0.8f)
-        blur(glowLeft, dp(14).toFloat())
-        blur(glowRight, dp(14).toFloat())
-
-        // 文字顏色
-        val textColor = Color.parseColor(if (isNight) "#F5F5F7" else "#1C1C1E")
-        val hintColor = Color.parseColor(if (isNight) "#99F5F5F7" else "#801C1C1E")
-        urlBar.setTextColor(textColor)
-        urlBar.setHintTextColor(hintColor)
-        btnBack.setTextColor(textColor)
-        btnForward.setTextColor(textColor)
-        btnReload.setTextColor(textColor)
-    }
-
-    /** 讓內容避開狀態列與導覽列 */
-    private fun applyWindowInsets() {
+    /** 網頁從狀態列下方開始，底部則延伸到螢幕邊緣 */
+    private fun applyStatusBarInset() {
         ViewCompat.setOnApplyWindowInsetsListener(root) { view, insets ->
-            val bars = insets.getInsets(WindowInsetsCompat.Type.systemBars())
-            view.setPadding(0, bars.top, 0, bars.bottom)
+            val top = insets.getInsets(WindowInsetsCompat.Type.statusBars()).top
+            view.setPadding(0, top, 0, 0)
             insets
         }
     }
 
-    /** 放射狀光暈：中心是指定顏色，往外逐漸透明 */
-    private fun glow(colorHex: String, radiusPx: Float, alpha: Float): GradientDrawable {
-        val base = Color.parseColor(colorHex)
-        val center = Color.argb((255 * alpha).toInt(), Color.red(base), Color.green(base), Color.blue(base))
-        val edge = Color.argb(0, Color.red(base), Color.green(base), Color.blue(base))
-        return GradientDrawable().apply {
-            setGradientType(GradientDrawable.RADIAL_GRADIENT)
-            setGradientRadius(radiusPx)
-            setColors(intArrayOf(center, edge))
+    /** 建立懸浮在網頁上方的磨砂玻璃工具列 */
+    private fun setupGlassBar() {
+        val dialog = Dialog(this, android.R.style.Theme_Translucent_NoTitleBar)
+        dialog.setContentView(R.layout.toolbar_glass)
+        dialog.setCancelable(false)
+        dialog.setCanceledOnTouchOutside(false)
+        // 工具列視窗收到返回鍵時，交給 Activity 處理（返回網頁歷史或結束）
+        dialog.setOnKeyListener { _, keyCode, event ->
+            if (keyCode == KeyEvent.KEYCODE_BACK) {
+                if (event.action == KeyEvent.ACTION_UP) onBackPressedDispatcher.onBackPressed()
+                true
+            } else {
+                false
+            }
         }
-    }
+        glassDialog = dialog
 
-    /** Android 12（API 31）以上才支援 RenderEffect；低版本會保留原本的漸層光暈 */
-    private fun blur(view: View, radiusPx: Float) {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            view.setRenderEffect(
-                RenderEffect.createBlurEffect(radiusPx, radiusPx, Shader.TileMode.CLAMP)
-            )
+        glassRoot = dialog.findViewById(R.id.glassRoot)
+        glassEdge = dialog.findViewById(R.id.glassEdge)
+        urlBar = dialog.findViewById(R.id.urlBar)
+        btnBack = dialog.findViewById(R.id.btnBack)
+        btnForward = dialog.findViewById(R.id.btnForward)
+        btnReload = dialog.findViewById(R.id.btnReload)
+
+        val glassWindow: Window = checkNotNull(dialog.window)
+        glassWindow.setBackgroundDrawable(ColorDrawable(Color.TRANSPARENT))
+        glassWindow.setLayout(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+        glassWindow.setGravity(Gravity.BOTTOM)
+        glassWindow.clearFlags(WindowManager.LayoutParams.FLAG_DIM_BEHIND)
+        // 工具列以外的區域仍可點擊網頁
+        glassWindow.addFlags(WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL)
+        glassWindow.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE)
+        WindowCompat.setDecorFitsSystemWindows(glassWindow, false)
+
+        // 工具列避開導覽列；鍵盤出現時視窗已經往上縮，就不再留白
+        ViewCompat.setOnApplyWindowInsetsListener(glassRoot) { view, insets ->
+            val navBottom = insets.getInsets(WindowInsetsCompat.Type.navigationBars()).bottom
+            val imeVisible = insets.isVisible(WindowInsetsCompat.Type.ime())
+            view.setPadding(0, 0, 0, if (imeVisible) 0 else navBottom)
+            insets
         }
-    }
 
-    private fun dp(value: Int): Int = (value * resources.displayMetrics.density).toInt()
+        // Android 12（API 31）以上：系統會模糊工具列後方的網頁內容
+        val blurSupported = Build.VERSION.SDK_INT >= Build.VERSION_CODES.S &&
+            windowManager.isCrossWindowBlurEnabled
+        if (blurSupported) {
+            glassWindow.setBackgroundBlurRadius(dp(30))
+            glassRoot.setBackgroundColor(Color.parseColor(if (isNight) "#80101018" else "#80FFFFFF"))
+        } else {
+            // 沒有系統模糊時（Android 11 以下或已停用模糊）改用較不透明的底色
+            glassRoot.setBackgroundColor(Color.parseColor(if (isNight) "#F2101018" else "#F2FFFFFF"))
+        }
+        glassEdge.setBackgroundColor(Color.parseColor(if (isNight) "#33FFFFFF" else "#66FFFFFF"))
+
+        val textColor = Color.parseColor(if (isNight) "#F5F5F7" else "#1C1C1E")
+        urlBar.setTextColor(textColor)
+        urlBar.setHintTextColor(Color.parseColor(if (isNight) "#99F5F5F7" else "#801C1C1E"))
+        btnBack.setTextColor(textColor)
+        btnForward.setTextColor(textColor)
+        btnReload.setTextColor(textColor)
+
+        setupControls()
+        dialog.show()
+    }
 
     private fun setupWebView() {
         webView.settings.apply {
@@ -296,12 +269,16 @@ class MainActivity : AppCompatActivity() {
         urlBar.clearFocus()
     }
 
+    private fun dp(value: Int): Int = (value * resources.displayMetrics.density).toInt()
+
     override fun onSaveInstanceState(outState: Bundle) {
         super.onSaveInstanceState(outState)
         webView.saveState(outState)
     }
 
     override fun onDestroy() {
+        glassDialog?.dismiss()
+        glassDialog = null
         (webView.parent as? ViewGroup)?.removeView(webView)
         webView.destroy()
         super.onDestroy()
