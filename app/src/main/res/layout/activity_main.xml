@@ -1,65 +1,131 @@
 <?xml version="1.0" encoding="utf-8"?>
-<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+<!-- 玻璃風格介面：背景光斑、圓角網頁卡片、底部浮動玻璃工具列 -->
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/root"
     android:layout_width="match_parent"
-    android:layout_height="match_parent"
-    android:orientation="vertical">
+    android:layout_height="match_parent">
 
-    <!-- 工具列：上一頁、下一頁、網址列、重新整理 -->
-    <LinearLayout
+    <!-- 背景光斑：位於玻璃後方，透過玻璃可以看到顏色變化 -->
+    <View
+        android:id="@+id/blobTop"
+        android:layout_width="240dp"
+        android:layout_height="240dp"
+        android:layout_gravity="top|end" />
+
+    <View
+        android:id="@+id/blobBottom"
+        android:layout_width="280dp"
+        android:layout_height="280dp"
+        android:layout_gravity="bottom|start" />
+
+    <!-- 網頁卡片 -->
+    <FrameLayout
+        android:id="@+id/webCard"
         android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:gravity="center_vertical"
-        android:orientation="horizontal"
-        android:padding="4dp">
+        android:layout_height="match_parent"
+        android:layout_marginStart="12dp"
+        android:layout_marginTop="12dp"
+        android:layout_marginEnd="12dp"
+        android:layout_marginBottom="92dp">
 
-        <Button
-            android:id="@+id/btnBack"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:contentDescription="@string/back_desc"
-            android:minWidth="48dp"
-            android:text="←" />
+        <WebView
+            android:id="@+id/webView"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent" />
 
-        <Button
-            android:id="@+id/btnForward"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:contentDescription="@string/forward_desc"
-            android:minWidth="48dp"
-            android:text="→" />
+        <ProgressBar
+            android:id="@+id/progressBar"
+            style="?android:attr/progressBarStyleHorizontal"
+            android:layout_width="match_parent"
+            android:layout_height="3dp"
+            android:layout_gravity="top"
+            android:max="100"
+            android:visibility="gone" />
 
-        <EditText
-            android:id="@+id/urlBar"
-            android:layout_width="0dp"
-            android:layout_height="wrap_content"
-            android:layout_weight="1"
-            android:hint="@string/url_hint"
-            android:imeOptions="actionGo"
-            android:inputType="textUri"
-            android:maxLines="1" />
+    </FrameLayout>
 
-        <Button
-            android:id="@+id/btnReload"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:contentDescription="@string/reload_desc"
-            android:minWidth="48dp"
-            android:text="↻" />
-
-    </LinearLayout>
-
-    <ProgressBar
-        android:id="@+id/progressBar"
-        style="?android:attr/progressBarStyleHorizontal"
+    <!-- 底部浮動玻璃工具列 -->
+    <FrameLayout
+        android:id="@+id/glassBar"
         android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:max="100"
-        android:visibility="gone" />
+        android:layout_height="60dp"
+        android:layout_gravity="bottom"
+        android:layout_marginStart="16dp"
+        android:layout_marginEnd="16dp"
+        android:layout_marginBottom="16dp">
 
-    <WebView
-        android:id="@+id/webView"
-        android:layout_width="match_parent"
-        android:layout_height="0dp"
-        android:layout_weight="1" />
+        <View
+            android:id="@+id/glowLeft"
+            android:layout_width="110dp"
+            android:layout_height="110dp"
+            android:layout_gravity="start|center_vertical" />
 
-</LinearLayout>
+        <View
+            android:id="@+id/glowRight"
+            android:layout_width="110dp"
+            android:layout_height="110dp"
+            android:layout_gravity="end|center_vertical" />
+
+        <!-- 玻璃表面的反光 -->
+        <View
+            android:id="@+id/glassSheen"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent" />
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:gravity="center_vertical"
+            android:orientation="horizontal"
+            android:paddingStart="6dp"
+            android:paddingEnd="6dp">
+
+            <TextView
+                android:id="@+id/btnBack"
+                android:layout_width="44dp"
+                android:layout_height="match_parent"
+                android:background="?android:attr/selectableItemBackgroundBorderless"
+                android:contentDescription="@string/back_desc"
+                android:gravity="center"
+                android:text="←"
+                android:textSize="20sp" />
+
+            <TextView
+                android:id="@+id/btnForward"
+                android:layout_width="44dp"
+                android:layout_height="match_parent"
+                android:background="?android:attr/selectableItemBackgroundBorderless"
+                android:contentDescription="@string/forward_desc"
+                android:gravity="center"
+                android:text="→"
+                android:textSize="20sp" />
+
+            <EditText
+                android:id="@+id/urlBar"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:background="@null"
+                android:hint="@string/url_hint"
+                android:imeOptions="actionGo"
+                android:inputType="textUri"
+                android:maxLines="1"
+                android:paddingStart="8dp"
+                android:paddingEnd="8dp"
+                android:textSize="16sp" />
+
+            <TextView
+                android:id="@+id/btnReload"
+                android:layout_width="44dp"
+                android:layout_height="match_parent"
+                android:background="?android:attr/selectableItemBackgroundBorderless"
+                android:contentDescription="@string/reload_desc"
+                android:gravity="center"
+                android:text="↻"
+                android:textSize="20sp" />
+
+        </LinearLayout>
+
+    </FrameLayout>
+
+</FrameLayout>
