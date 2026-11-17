@@ -25,13 +25,17 @@ jobs:
         with:
           gradle-version: '8.9'
 
-      - name: 設定 Android SDK
-        uses: android-actions/setup-android@v3
-
-      - name: 安裝 compileSdk 與 build-tools
+      - name: 確認並安裝 compileSdk 與 build-tools
         run: |
-          yes | sdkmanager --licenses > /dev/null || true
-          sdkmanager "platforms;android-35" "build-tools;35.0.0"
+          echo "ANDROID_HOME=$ANDROID_HOME"
+          SDKMANAGER=$(command -v sdkmanager || ls "$ANDROID_HOME"/cmdline-tools/*/bin/sdkmanager | head -n 1)
+          echo "使用 sdkmanager: $SDKMANAGER"
+          if [ -d "$ANDROID_HOME/platforms/android-35" ] && [ -d "$ANDROID_HOME/build-tools/35.0.0" ]; then
+            echo "SDK 元件已存在，略過安裝"
+          else
+            yes | "$SDKMANAGER" --licenses > /dev/null || true
+            "$SDKMANAGER" "platforms;android-35" "build-tools;35.0.0"
+          fi
 
       - name: 建置 Debug APK
         run: gradle assembleDebug --stacktrace
