@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">網頁瀏覽器</string>
+    <string name="url_hint">輸入網址或搜尋關鍵字</string>
+    <string name="back_desc">上一頁</string>
+    <string name="forward_desc">下一頁</string>
+    <string name="reload_desc">重新整理</string>
+    <string name="cannot_open_link">找不到可以開啟此連結的 App</string>
+</resources>
