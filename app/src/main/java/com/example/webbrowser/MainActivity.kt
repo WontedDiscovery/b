@@ -100,7 +100,8 @@ class MainActivity : AppCompatActivity() {
     private var glassReady = false
     private var glassVisible = true
     private var navInset = 0
-    private var imeScreen = 0 // 鍵盤高度（螢幕座標），鍵盤隱藏時為 0
+    private var imeVisible = false // 目前拿到焦點的視窗，鍵盤是否顯示中
+    private var imeHeight = 0 // 鍵盤高度（螢幕座標），鍵盤收起後仍保留最後量到的值
     private var urlWinY = 0 // 網址列視窗目前離螢幕底部的距離
     private var statusTop = 0
     private var scrollHidden = false
@@ -178,9 +179,8 @@ class MainActivity : AppCompatActivity() {
             statusTop = insets.getInsets(WindowInsetsCompat.Type.statusBars()).top
             navInset = insets.getInsets(WindowInsetsCompat.Type.navigationBars()).bottom
             view.setPadding(0, statusTop, 0, 0)
-            // 網頁的輸入框叫出鍵盤時，玻璃列也要移到鍵盤上方。這時網址列視窗沒有焦點，收不到鍵盤高度，所以在這裡算
-            val ime = WindowInsetsCompat.Type.ime()
-            imeScreen = if (insets.isVisible(ime)) insets.getInsets(ime).bottom else 0
+            // 鍵盤只聽拿到焦點的視窗：網址列拿到焦點時，鍵盤是網址列的，由它自己回報
+            if (!glassHasFocus()) takeRootKeyboard(insets)
             placeGlass()
             insets
         }
@@ -334,12 +334,14 @@ class MainActivity : AppCompatActivity() {
         // 鍵盤出現時，兩列一起往上移到鍵盤上方。視窗回報的是「與鍵盤重疊的高度」，
         // 要加上視窗本身離底部的距離才是螢幕上的鍵盤高度；移到鍵盤上方後不再重疊，就沿用已量到的高度。
         ViewCompat.setOnApplyWindowInsetsListener(urlPill) { _, insets ->
-            val type = WindowInsetsCompat.Type.ime()
-            if (!insets.isVisible(type)) {
-                imeScreen = 0
-            } else {
-                val overlap = insets.getInsets(type).bottom
-                if (overlap > 0) imeScreen = overlap + urlWinY
+            // 只有網址列拿到焦點時，才採用它回報的鍵盤狀態
+            if (urlPill.hasWindowFocus()) {
+                val type = WindowInsetsCompat.Type.ime()
+                imeVisible = insets.isVisible(type)
+                if (imeVisible) {
+                    val overlap = insets.getInsets(type).bottom
+                    if (overlap > 0) imeHeight = overlap + urlWinY
+                }
             }
             placeGlass()
             insets
@@ -542,7 +544,25 @@ class MainActivity : AppCompatActivity() {
         keyboardTarget = null
         if (urlEditing) urlEdit.clearFocus()
         setGlassFocusable(false)
+        // 鍵盤改由主視窗負責。鍵盤收起時不一定會再回報，所以直接確認一次目前的狀態
+        syncRootKeyboard()
     }
+
+    /** 網頁（主視窗）的鍵盤狀態；只有主視窗拿到焦點時才採用 */
+    private fun takeRootKeyboard(insets: WindowInsetsCompat) {
+        val ime = WindowInsetsCompat.Type.ime()
+        imeVisible = insets.isVisible(ime)
+        if (imeVisible) imeHeight = insets.getInsets(ime).bottom
+    }
+
+    /** 直接讀取主視窗目前的鍵盤狀態，不等回報 */
+    private fun syncRootKeyboard() {
+        val insets = ViewCompat.getRootWindowInsets(root) ?: return
+        takeRootKeyboard(insets)
+        placeGlass()
+    }
+
+    private fun glassHasFocus(): Boolean = ::urlPill.isInitialized && urlPill.hasWindowFocus()
 
     /** 書籤有增減時，重新產生所有開著的起始畫面，讓喜好項目即時更新 */
     private fun refreshStartPages() {
@@ -559,7 +579,8 @@ class MainActivity : AppCompatActivity() {
 
     /** 依導覽列與鍵盤高度，放好兩列玻璃；第一次時以動畫顯示 */
     private fun placeGlass() {
-        val navY = maxOf(navInset, imeScreen) + dp(GLASS_BOTTOM_GAP_DP)
+        val keyboard = if (imeVisible) imeHeight else 0 // 鍵盤收起時，玻璃列回到底部
+        val navY = maxOf(navInset, keyboard) + dp(GLASS_BOTTOM_GAP_DP)
         val urlY = navY + dp(BAR_HEIGHT_DP) + dp(GAP_DP)
         if (navY != lastNavY) {
             setPosition(navDialog, dp(MARGIN_DP), navY)
