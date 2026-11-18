@@ -28,6 +28,7 @@ import android.view.Gravity
 import android.view.KeyEvent
 import android.view.View
 import android.view.ViewGroup
+import android.view.ViewTreeObserver
 import android.view.WindowManager
 import android.view.animation.AccelerateInterpolator
 import android.view.animation.DecelerateInterpolator
@@ -41,6 +42,7 @@ import android.webkit.URLUtil
 import android.webkit.ValueCallback
 import android.webkit.WebChromeClient
 import android.webkit.WebResourceRequest
+import android.webkit.WebResourceResponse
 import android.webkit.WebSettings
 import android.webkit.WebStorage
 import android.webkit.WebView
@@ -59,6 +61,7 @@ import androidx.core.view.ViewCompat
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
+import java.io.ByteArrayInputStream
 
 class MainActivity : AppCompatActivity() {
 
@@ -104,6 +107,8 @@ class MainActivity : AppCompatActivity() {
     private var findMode = false
     private var lastNavY = -1
     private var lastUrlY = -1
+    private var urlEditing = false // 正在編輯網址（網址列拿到焦點）
+    private var keyboardTarget: EditText? = null // 等玻璃視窗拿到焦點後，要叫出鍵盤的輸入框
 
     // 疊在網頁上的面板：分頁總覽、選單、書籤、歷史紀錄、設定
     private class Overlay(val layer: View, val panel: View, val sheet: Boolean)
@@ -163,8 +168,8 @@ class MainActivity : AppCompatActivity() {
         buildGlass()
         setupBackNavigation()
 
-        // 有上次的分頁就還原，否則開啟首頁
-        if (!restoreSession()) addTab(store.homepage)
+        // 有上次的分頁就還原，否則開啟起始畫面
+        if (!restoreSession()) addTab(StartPage.URL)
     }
 
     /** 網頁從狀態列下方開始；玻璃列依導覽列與鍵盤高度定位 */
@@ -173,6 +178,9 @@ class MainActivity : AppCompatActivity() {
             statusTop = insets.getInsets(WindowInsetsCompat.Type.statusBars()).top
             navInset = insets.getInsets(WindowInsetsCompat.Type.navigationBars()).bottom
             view.setPadding(0, statusTop, 0, 0)
+            // 網頁的輸入框叫出鍵盤時，玻璃列也要移到鍵盤上方。這時網址列視窗沒有焦點，收不到鍵盤高度，所以在這裡算
+            val ime = WindowInsetsCompat.Type.ime()
+            imeScreen = if (insets.isVisible(ime)) insets.getInsets(ime).bottom else 0
             placeGlass()
             insets
         }
@@ -261,7 +269,7 @@ class MainActivity : AppCompatActivity() {
 
         backIcon = iconOf(Ico.BACK, textColor, R.string.back_desc) { goBack() }
         forwardIcon = iconOf(Ico.FORWARD, textColor, R.string.forward_desc) { goForward() }
-        val newTabIcon = iconOf(Ico.PLUS, textColor, R.string.menu_new_tab) { addTab(store.homepage) }
+        val newTabIcon = iconOf(Ico.PLUS, textColor, R.string.menu_new_tab) { addTab(StartPage.URL) }
         tabCount = TextView(this).apply {
             setTextColor(textColor)
             textSize = 11f
@@ -298,6 +306,7 @@ class MainActivity : AppCompatActivity() {
         }
 
         urlEdit.setOnClickListener { startEditingUrl() }
+        findEdit.setOnClickListener { focusGlassInput(findEdit) }
         urlEdit.setOnFocusChangeListener { _, hasFocus -> if (!hasFocus) stopEditingUrl() }
         urlEdit.setOnEditorActionListener { _, actionId, _ ->
             if (actionId == EditorInfo.IME_ACTION_GO || actionId == EditorInfo.IME_ACTION_DONE) {
@@ -336,8 +345,10 @@ class MainActivity : AppCompatActivity() {
             insets
         }
 
-        urlDialog = glassWindow(urlPill, barH, focusable = true)
+        // 網址列視窗平常不拿焦點，網頁的輸入框才叫得出鍵盤；編輯網址或尋找時才拿焦點（見 setGlassFocusable）
+        urlDialog = glassWindow(urlPill, barH, focusable = false)
         navDialog = glassWindow(navPill, barH, focusable = false)
+        urlPill.viewTreeObserver.addOnWindowFocusChangeListener(glassWindowFocus)
     }
 
     private fun iconOf(kind: Ico, color: Int, descRes: Int, onTap: () -> Unit): IconView =
@@ -483,11 +494,61 @@ class MainActivity : AppCompatActivity() {
         // 只有網址列需要焦點，導覽列不搶走焦點
         if (!focusable) win.addFlags(WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE)
         win.setSoftInputMode(
-            WindowManager.LayoutParams.SOFT_INPUT_STATE_HIDDEN or
+            WindowManager.LayoutParams.SOFT_INPUT_STATE_UNCHANGED or
                 WindowManager.LayoutParams.SOFT_INPUT_ADJUST_NOTHING
         )
         WindowCompat.setDecorFitsSystemWindows(win, false)
         return dialog
+    }
+
+    // ---------- 玻璃視窗的焦點與鍵盤 ----------
+    // 鍵盤只會叫給擁有焦點的視窗。網址列視窗若一直拿著焦點，網頁的輸入框就叫不出鍵盤，
+    // 所以平常不拿焦點，只有編輯網址或尋找時才拿，結束後再把焦點還給網頁。
+
+    private val glassWindowFocus = ViewTreeObserver.OnWindowFocusChangeListener { hasFocus ->
+        onGlassWindowFocusChanged(hasFocus)
+    }
+
+    /** 設定網址列視窗能不能拿焦點 */
+    private fun setGlassFocusable(focusable: Boolean) {
+        if (!::urlDialog.isInitialized) return
+        val win = urlDialog.window ?: return
+        if (focusable) {
+            win.clearFlags(WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE)
+        } else {
+            win.addFlags(WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE)
+        }
+    }
+
+    /** 讓網址列或搜尋列拿到焦點；等視窗真的拿到焦點後才叫出鍵盤（太早叫會失敗） */
+    private fun focusGlassInput(input: EditText) {
+        setGlassFocusable(true)
+        input.requestFocus()
+        if (urlPill.hasWindowFocus()) {
+            input.post { showKeyboard(input) }
+        } else {
+            keyboardTarget = input
+        }
+    }
+
+    private fun onGlassWindowFocusChanged(hasFocus: Boolean) {
+        if (hasFocus) {
+            val target = keyboardTarget ?: return
+            keyboardTarget = null
+            target.post { showKeyboard(target) }
+            return
+        }
+        // 失去焦點（例如點了網頁）：結束網址編輯，並把焦點還給網頁
+        keyboardTarget = null
+        if (urlEditing) urlEdit.clearFocus()
+        setGlassFocusable(false)
+    }
+
+    /** 書籤有增減時，重新產生所有開著的起始畫面，讓喜好項目即時更新 */
+    private fun refreshStartPages() {
+        for (t in tabs) {
+            if (StartPage.isStart(t.url)) t.webView?.reload()
+        }
     }
 
     private fun onGlassKey(keyCode: Int, event: KeyEvent): Boolean {
@@ -668,34 +729,39 @@ class MainActivity : AppCompatActivity() {
 
     private fun showMenu() {
         val tab = currentTab ?: return
+        val onStart = StartPage.isStart(tab.url)
         val marked = store.isBookmarked(tab.url)
-        showSheet(
-            listOf(
-                SheetItem(Ico.PLUS, getString(R.string.menu_new_tab)) { addTab(store.homepage) },
+        val items = mutableListOf<SheetItem>()
+        items.add(SheetItem(Ico.PLUS, getString(R.string.menu_new_tab)) { addTab(StartPage.URL) })
+        if (!onStart) {
+            items.add(
                 SheetItem(
                     if (marked) Ico.STAR_FILLED else Ico.STAR,
                     getString(if (marked) R.string.menu_remove_bookmark else R.string.menu_add_bookmark)
-                ) { toggleBookmark() },
-                SheetItem(Ico.BOOKMARK, getString(R.string.menu_bookmarks)) { showBookmarks() },
-                SheetItem(Ico.HISTORY, getString(R.string.menu_history)) { showHistory() },
+                ) { toggleBookmark() }
+            )
+        }
+        items.add(SheetItem(Ico.BOOKMARK, getString(R.string.menu_bookmarks)) { showBookmarks() })
+        items.add(SheetItem(Ico.HISTORY, getString(R.string.menu_history)) { showHistory() })
+        if (!onStart) {
+            items.add(
                 SheetItem(Ico.FIND, getString(R.string.menu_find)) {
                     // 等選單關閉、玻璃列出現後再進入尋找模式，輸入框才拿得到焦點
                     root.postDelayed({ enterFind() }, 260L)
-                },
-                SheetItem(Ico.SHARE, getString(R.string.menu_share)) { shareText(tab.url) },
-                SheetItem(Ico.COPY, getString(R.string.menu_copy_link)) { copyText(tab.url) },
-                SheetItem(
-                    Ico.DESKTOP,
-                    getString(R.string.menu_desktop_site),
-                    checked = tab.desktopMode
-                ) { toggleDesktop() },
-                SheetItem(Ico.HOME, getString(R.string.menu_home)) { loadInCurrent(store.homepage) },
-                SheetItem(Ico.DOWNLOAD, getString(R.string.menu_downloads)) { openDownloads() },
-                SheetItem(Ico.EXTERNAL, getString(R.string.menu_open_external)) { openExternal(tab.url) },
-                SheetItem(Ico.CLOSE, getString(R.string.menu_close_tab)) { closeTab(currentIndex) },
-                SheetItem(Ico.SETTINGS, getString(R.string.menu_settings)) { showSettings() }
+                }
             )
-        )
+            items.add(SheetItem(Ico.SHARE, getString(R.string.menu_share)) { shareText(tab.url) })
+            items.add(SheetItem(Ico.COPY, getString(R.string.menu_copy_link)) { copyText(tab.url) })
+            items.add(SheetItem(Ico.DESKTOP, getString(R.string.menu_desktop_site), checked = tab.desktopMode) { toggleDesktop() })
+        }
+        items.add(SheetItem(Ico.HOME, getString(R.string.menu_home)) { loadInCurrent(store.homepage) })
+        items.add(SheetItem(Ico.DOWNLOAD, getString(R.string.menu_downloads)) { openDownloads() })
+        if (!onStart) {
+            items.add(SheetItem(Ico.EXTERNAL, getString(R.string.menu_open_external)) { openExternal(tab.url) })
+        }
+        items.add(SheetItem(Ico.CLOSE, getString(R.string.menu_close_tab)) { closeTab(currentIndex) })
+        items.add(SheetItem(Ico.SETTINGS, getString(R.string.menu_settings)) { showSettings() })
+        showSheet(items)
     }
 
     /** 長按連結或圖片時出現的選單 */
@@ -737,7 +803,7 @@ class MainActivity : AppCompatActivity() {
             onBack = { hideTopOverlay() },
             onNew = {
                 hideTopOverlay()
-                addTab(store.homepage)
+                addTab(StartPage.URL)
             }
         )
         switcher = panel
@@ -778,6 +844,7 @@ class MainActivity : AppCompatActivity() {
                     {
                         store.saveBookmarks(store.bookmarks().filterNot { it.url == e.url })
                         p.removeBySubtitle(e.url)
+                        refreshStartPages()
                         toast(R.string.bookmark_removed)
                     }
                 )
@@ -826,7 +893,12 @@ class MainActivity : AppCompatActivity() {
             null,
             { pickSearchEngine(onChanged) }
         ),
-        Row(getString(R.string.settings_homepage), store.homepage, null, { setHomepageToCurrent(onChanged) }),
+        Row(
+            getString(R.string.settings_homepage),
+            if (StartPage.isStart(store.homepage)) getString(R.string.start_title) else store.homepage,
+            null,
+            { setHomepageToCurrent(onChanged) }
+        ),
         Row(
             getString(R.string.settings_clear_data),
             getString(R.string.settings_clear_data_sub),
@@ -886,6 +958,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun toggleBookmark() {
         val tab = currentTab ?: return
+        if (StartPage.isStart(tab.url)) return
         val list = store.bookmarks()
         val idx = list.indexOfFirst { it.url == tab.url }
         if (idx >= 0) {
@@ -897,6 +970,7 @@ class MainActivity : AppCompatActivity() {
             store.saveBookmarks(list)
             toast(R.string.bookmark_added)
         }
+        refreshStartPages()
     }
 
     private fun toggleDesktop() {
@@ -960,7 +1034,7 @@ class MainActivity : AppCompatActivity() {
     // ---------- 分頁 ----------
 
     private fun addTab(url: String): BrowserTab {
-        val tab = BrowserTab(url, "")
+        val tab = BrowserTab(url, if (StartPage.isStart(url)) getString(R.string.start_title) else "")
         tabs.add(tab)
         selectTab(tabs.lastIndex, animate = currentIndex >= 0)
         return tab
@@ -991,6 +1065,10 @@ class MainActivity : AppCompatActivity() {
     private fun selectTab(index: Int, animate: Boolean) {
         if (index !in tabs.indices || index == currentIndex) return
         if (findMode) exitFind()
+        if (urlEditing) {
+            hideKeyboard(urlEdit)
+            urlEdit.clearFocus()
+        }
         val target = tabs[index]
         val old = currentWebView
         if (old != null) currentTab?.let { capturePreview(it) } // 離開前先記下目前分頁的畫面
@@ -1066,7 +1144,7 @@ class MainActivity : AppCompatActivity() {
         }
         if (tabs.isEmpty()) {
             currentIndex = -1
-            addTab(store.homepage)
+            addTab(StartPage.URL)
         } else if (wasCurrent) {
             currentIndex = -1
             selectTab(minOf(index, tabs.lastIndex), animate = false)
@@ -1126,6 +1204,21 @@ class MainActivity : AppCompatActivity() {
                 }
             }
 
+            // 起始畫面的網址是虛擬的：直接回傳由書籤產生的頁面，不會真的連線
+            override fun shouldInterceptRequest(view: WebView?, request: WebResourceRequest?): WebResourceResponse? {
+                val url = request?.url?.toString() ?: return null
+                if (!StartPage.isStart(url)) return null
+                val html = StartPage.html(this@MainActivity, store.bookmarks())
+                return WebResourceResponse(
+                    "text/html",
+                    "UTF-8",
+                    200,
+                    "OK",
+                    mapOf("Cache-Control" to "no-store"),
+                    ByteArrayInputStream(html.toByteArray(Charsets.UTF_8))
+                )
+            }
+
             override fun onPageStarted(view: WebView?, url: String?, favicon: Bitmap?) {
                 tab.url = url ?: tab.url
                 tab.loading = true
@@ -1143,7 +1236,7 @@ class MainActivity : AppCompatActivity() {
                 tab.progress = 100
                 tab.url = url ?: tab.url
                 tab.title = view?.title ?: tab.title
-                if (tab.url.startsWith("http")) {
+                if (tab.url.startsWith("http") && !StartPage.isStart(tab.url)) {
                     store.addHistory(tab.title.ifEmpty { hostOf(tab.url) }, tab.url)
                 }
                 if (tab === currentTab) updateChrome()
@@ -1296,7 +1389,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun showUrlText(url: String) {
         if (urlEdit.hasFocus()) return
-        urlEdit.setText(if (url.isEmpty()) "" else hostOf(url))
+        urlEdit.setText(if (url.isEmpty() || StartPage.isStart(url)) "" else hostOf(url))
     }
 
     /** 載入中時，重新整理按鈕會變成停止按鈕（圖示以縮放動畫切換） */
@@ -1394,18 +1487,23 @@ class MainActivity : AppCompatActivity() {
     // ---------- 網址列 ----------
 
     private fun startEditingUrl() {
-        urlEdit.isFocusable = true
-        urlEdit.isFocusableInTouchMode = true
-        urlEdit.requestFocus()
-        urlEdit.setText(currentTab?.url ?: "")
-        urlEdit.selectAll()
-        showKeyboard(urlEdit)
+        if (!urlEditing) {
+            urlEditing = true
+            urlEdit.isFocusable = true
+            urlEdit.isFocusableInTouchMode = true
+            val url = currentTab?.url.orEmpty()
+            urlEdit.setText(if (StartPage.isStart(url)) "" else url)
+            urlEdit.selectAll()
+        }
+        focusGlassInput(urlEdit)
     }
 
     private fun stopEditingUrl() {
+        urlEditing = false
         urlEdit.isFocusable = false
         urlEdit.isFocusableInTouchMode = false
         currentTab?.let { showUrlText(it.url) }
+        if (!findMode) setGlassFocusable(false)
     }
 
     /** 網址列按下前往：看起來像網址就直接前往，否則用搜尋引擎搜尋 */
@@ -1452,8 +1550,7 @@ class MainActivity : AppCompatActivity() {
         switchPillMode()
         findEdit.setText("")
         findCounter.text = "0/0"
-        findEdit.requestFocus()
-        showKeyboard(findEdit)
+        focusGlassInput(findEdit)
     }
 
     private fun exitFind() {
@@ -1463,6 +1560,7 @@ class MainActivity : AppCompatActivity() {
         hideKeyboard(findEdit)
         findEdit.clearFocus()
         switchPillMode()
+        if (!urlEditing) setGlassFocusable(false)
     }
 
     /** 網址列與搜尋列之間的交叉淡入淡出 */
@@ -1605,6 +1703,10 @@ class MainActivity : AppCompatActivity() {
                     customView != null -> exitFullscreen()
                     overlayStack.isNotEmpty() -> hideTopOverlay()
                     findMode -> exitFind()
+                    urlEditing -> {
+                        hideKeyboard(urlEdit)
+                        urlEdit.clearFocus()
+                    }
                     currentWebView?.canGoBack() == true -> goBack()
                     else -> {
                         isEnabled = false
