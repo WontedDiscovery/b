@@ -110,8 +110,8 @@ class Palette(night: Boolean, blur: Boolean) {
         when {
             blur && night -> "#802C2C2E"
             blur -> "#99FFFFFF"
-            night -> "#F22C2C2E"
-            else -> "#F2FFFFFF"
+            night -> "#B32C2C2E"
+            else -> "#B3FFFFFF"
         }
     )
     val glassStroke: Int = Color.parseColor(if (night) "#40FFFFFF" else "#80FFFFFF")
