@@ -354,19 +354,62 @@ class MainActivity : AppCompatActivity() {
         FrostedDrawable(fill, stroke, heightPx / 2f, dp(1).toFloat())
 
     // ---------- 模糊備案 ----------
-    // 系統視窗模糊不可用時（Android 11 以下，或系統關閉了模糊），擷取膠囊後方的網頁，縮小後再放大，畫面就會變模糊
+    // 系統視窗模糊不可用時才使用：擷取膠囊後方的畫面，每 1 dp 一個像素後做方塊模糊（見 FrostBlur.kt）
+
+    private val blurK: Int by lazy { Math.round(resources.displayMetrics.density).coerceAtLeast(1) }
+    private val frostBlurs = HashMap<View, FrostBlur>()
+    private fun blurFor(pill: View): FrostBlur = frostBlurs.getOrPut(pill) { FrostBlur(blurK) }
+
+    private val blurHandler = android.os.Handler(android.os.Looper.getMainLooper())
+    private val blurRefresh = Runnable { refreshBlur() }
+
+    /** Android 8 以下：停止捲動後，重新擷取一次後方的畫面 */
+    private fun scheduleBlur() {
+        if (blurSupported || !glassReady) return
+        blurHandler.removeCallbacks(blurRefresh)
+        blurHandler.postDelayed(blurRefresh, 120L)
+    }
+
+    private fun refreshBlur() {
+        val wv = currentWebView ?: return
+        if (!glassVisible || wv.width == 0) return
+        for (pill in listOf(urlPill, navPill)) {
+            val frost = pill.background as? FrostedDrawable ?: continue
+            val shot = captureBehind(wv, pill) ?: continue
+            frost.blur = blurFor(pill).blur(shot)
+        }
+    }
+
+    /** 把網頁中、膠囊後方的那一塊畫到與膠囊等大的圖上 */
+    private fun captureBehind(wv: WebView, pill: View): android.graphics.Bitmap? {
+        if (pill.width == 0 || pill.height == 0) return null
+        return try {
+            val wLoc = IntArray(2)
+            val pLoc = IntArray(2)
+            wv.getLocationOnScreen(wLoc)
+            pill.getLocationOnScreen(pLoc)
+            val bmp = android.graphics.Bitmap.createBitmap(
+                pill.width, pill.height, android.graphics.Bitmap.Config.ARGB_8888
+            )
+            val c = android.graphics.Canvas(bmp)
+            c.translate(-(pLoc[0] - wLoc[0]).toFloat(), -(pLoc[1] - wLoc[1]).toFloat())
+            wv.draw(c)
+            bmp
+        } catch (e: Exception) {
+            null
+        }
+    }
 
     // ---------- 即時模糊（Android 8 以上）----------
-    // 捲動時約每 33 毫秒用 PixelCopy 讀出玻璃列後方的畫面，縮小後交給膠囊背景，模糊會跟著網頁內容變化
+    // 捲動時約每 33 毫秒用 PixelCopy 讀出膠囊後方的畫面，再經 FrostBlur 模糊，模糊會跟著網頁內容變化
 
     private val liveTick = Runnable { liveStep() }
     private val liveBufs = HashMap<View, android.graphics.Bitmap>()
     private val liveBusy = HashSet<View>()
-    private val livePaint = android.graphics.Paint(android.graphics.Paint.FILTER_BITMAP_FLAG)
     private var liveUntil = 0L
     private var liveRunning = false
 
-    /** 玻璃列需要模糊時呼叫：Android 8 以上即時更新，以下只在捲動停止後更新一次 */
+    /** 玻璃列需要模糊時呼叫：Android 8 以上即時更新，以下改為停止捲動後更新一次 */
     private fun touchBlur() {
         if (blurSupported) return
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) startLiveBlur() else scheduleBlur()
@@ -413,67 +456,12 @@ class MainActivity : AppCompatActivity() {
                 full,
                 { result ->
                     liveBusy.remove(pill)
-                    if (result == android.view.PixelCopy.SUCCESS) frost.blur = shrink8(full, frost.blur)
+                    if (result == android.view.PixelCopy.SUCCESS) frost.blur = blurFor(pill).blur(full)
                 },
                 blurHandler
             )
         } catch (e: Exception) {
             liveBusy.remove(pill)
-        }
-    }
-
-    /** 把讀到的畫面縮到 1/8；盡量沿用同一張小圖，減少記憶體配置 */
-    private fun shrink8(full: android.graphics.Bitmap, reuse: android.graphics.Bitmap?): android.graphics.Bitmap {
-        val w = maxOf(1, full.width / 8)
-        val h = maxOf(1, full.height / 8)
-        val out = if (reuse != null && reuse.width == w && reuse.height == h) {
-            reuse
-        } else {
-            android.graphics.Bitmap.createBitmap(w, h, android.graphics.Bitmap.Config.ARGB_8888)
-        }
-        android.graphics.Canvas(out).drawBitmap(full, null, android.graphics.Rect(0, 0, w, h), livePaint)
-        return out
-    }
-
-    private val blurHandler = android.os.Handler(android.os.Looper.getMainLooper())
-    private val blurRefresh = Runnable { refreshBlur() }
-
-    /** 網頁捲動、玻璃列移動後，稍等一下再重新擷取（連續捲動只擷取一次） */
-    private fun scheduleBlur() {
-        if (blurSupported || !glassReady) return
-        blurHandler.removeCallbacks(blurRefresh)
-        blurHandler.postDelayed(blurRefresh, 120L)
-    }
-
-    private fun refreshBlur() {
-        val wv = currentWebView ?: return
-        if (!glassVisible || wv.width == 0) return
-        for (pill in listOf(urlPill, navPill)) {
-            val frost = pill.background as? FrostedDrawable ?: continue
-            frost.blur = captureBehind(wv, pill)
-        }
-    }
-
-    /** 把網頁中、膠囊後方的那一小塊畫到縮小過的圖上 */
-    private fun captureBehind(wv: WebView, pill: View): android.graphics.Bitmap? {
-        if (pill.width == 0 || pill.height == 0) return null
-        return try {
-            val wLoc = IntArray(2)
-            val pLoc = IntArray(2)
-            wv.getLocationOnScreen(wLoc)
-            pill.getLocationOnScreen(pLoc)
-            val bmp = android.graphics.Bitmap.createBitmap(
-                maxOf(1, (pill.width * BLUR_SCALE).toInt()),
-                maxOf(1, (pill.height * BLUR_SCALE).toInt()),
-                android.graphics.Bitmap.Config.ARGB_8888
-            )
-            val c = android.graphics.Canvas(bmp)
-            c.scale(BLUR_SCALE, BLUR_SCALE)
-            c.translate(-(pLoc[0] - wLoc[0]).toFloat(), -(pLoc[1] - wLoc[1]).toFloat())
-            wv.draw(c)
-            bmp
-        } catch (e: Exception) {
-            null
         }
     }
 
@@ -1629,7 +1617,6 @@ class MainActivity : AppCompatActivity() {
         private const val GLASS_BOTTOM_GAP_DP = 10
         private const val MARGIN_DP = 20
         private const val BLUR_DP = 24
-        private const val BLUR_SCALE = 0.1f // 模糊備案：先縮小到 1/10 再擷取
         private const val SHEET_OFFSET_DP = 640
         private val ENGINE_NAMES = arrayOf<CharSequence>("Google", "Bing", "DuckDuckGo")
     }
