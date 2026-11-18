@@ -2,8 +2,58 @@
 <resources>
     <string name="app_name">網頁瀏覽器</string>
     <string name="url_hint">輸入網址或搜尋關鍵字</string>
+    <string name="find_hint">在頁面中尋找</string>
     <string name="back_desc">上一頁</string>
     <string name="forward_desc">下一頁</string>
     <string name="reload_desc">重新整理</string>
+    <string name="stop_desc">停止載入</string>
+    <string name="close_desc">關閉</string>
+    <string name="more_desc">更多</string>
+    <string name="tabs_desc">分頁</string>
+    <string name="find_prev_desc">上一個</string>
+    <string name="find_next_desc">下一個</string>
+    <string name="find_close_desc">關閉搜尋</string>
     <string name="cannot_open_link">找不到可以開啟此連結的 App</string>
+
+    <string name="menu_new_tab">新增分頁</string>
+    <string name="menu_add_bookmark">加入書籤</string>
+    <string name="menu_remove_bookmark">移除書籤</string>
+    <string name="menu_bookmarks">書籤</string>
+    <string name="menu_history">歷史紀錄</string>
+    <string name="menu_find">在頁面中尋找</string>
+    <string name="menu_share">分享</string>
+    <string name="menu_copy_link">複製網址</string>
+    <string name="menu_desktop_site">電腦版網站</string>
+    <string name="menu_home">首頁</string>
+    <string name="menu_downloads">下載項目</string>
+    <string name="menu_open_external">用其他 App 開啟</string>
+    <string name="menu_close_tab">關閉分頁</string>
+    <string name="menu_settings">設定</string>
+    <string name="open_new_tab">在新分頁開啟</string>
+    <string name="image_download">下載圖片</string>
+
+    <string name="tabs_title">分頁（%1$d）</string>
+    <string name="bookmarks_title">書籤</string>
+    <string name="bookmarks_empty">還沒有書籤</string>
+    <string name="history_title">歷史紀錄</string>
+    <string name="history_empty">還沒有瀏覽紀錄</string>
+    <string name="history_clear">清除紀錄</string>
+    <string name="history_clear_confirm">要清除所有瀏覽紀錄嗎？</string>
+
+    <string name="settings_title">設定</string>
+    <string name="settings_search_engine">搜尋引擎</string>
+    <string name="settings_homepage">首頁</string>
+    <string name="settings_clear_data">清除瀏覽資料</string>
+    <string name="settings_clear_data_sub">歷史紀錄、Cookie 與快取</string>
+    <string name="settings_clear_confirm">要清除歷史紀錄、Cookie 和快取嗎？</string>
+
+    <string name="ok">確定</string>
+    <string name="cancel">取消</string>
+    <string name="homepage_set">已將目前頁面設為首頁</string>
+    <string name="bookmark_added">已加入書籤</string>
+    <string name="bookmark_removed">已移除書籤</string>
+    <string name="link_copied">已複製網址</string>
+    <string name="data_cleared">已清除瀏覽資料</string>
+    <string name="download_started">開始下載</string>
+    <string name="download_failed">下載失敗，請稍後再試</string>
 </resources>
