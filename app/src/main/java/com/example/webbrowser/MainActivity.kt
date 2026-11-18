@@ -410,14 +410,14 @@ class MainActivity : AppCompatActivity() {
     private var liveRunning = false
 
     /** 玻璃列需要模糊時呼叫：Android 8 以上即時更新，以下改為停止捲動後更新一次 */
-    private fun touchBlur() {
+    private fun touchBlur(boostMs: Long = 400L) {
         if (blurSupported) return
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) startLiveBlur() else scheduleBlur()
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) startLiveBlur(boostMs) else scheduleBlur()
     }
 
-    /** 捲動時持續更新；停止捲動約 0.4 秒後自動停止，省電 */
-    private fun startLiveBlur() {
-        liveUntil = android.os.SystemClock.uptimeMillis() + 400L
+    /** 持續更新一段時間（捲動、切換分頁、頁面載入時呼叫），到期後自動停止，省電 */
+    private fun startLiveBlur(durationMs: Long) {
+        liveUntil = maxOf(liveUntil, android.os.SystemClock.uptimeMillis() + durationMs)
         if (!liveRunning) {
             liveRunning = true
             blurHandler.post(liveTick)
@@ -1028,6 +1028,8 @@ class MainActivity : AppCompatActivity() {
             }
         }
         updateChrome()
+        updateGlassVisibility() // 切換後要把玻璃列顯示出來
+        touchBlur(1200L) // 分頁換了，玻璃列後方的模糊要跟著更新
     }
 
     /** 關閉分頁；如果關掉的是目前分頁，就切到旁邊的分頁。全部關掉時會開一個新的首頁分頁。 */
@@ -1112,6 +1114,7 @@ class MainActivity : AppCompatActivity() {
                     scrollHidden = false
                     updateChrome()
                     updateGlassVisibility()
+                    touchBlur(800L)
                 }
             }
 
@@ -1124,6 +1127,7 @@ class MainActivity : AppCompatActivity() {
                     store.addHistory(tab.title.ifEmpty { hostOf(tab.url) }, tab.url)
                 }
                 if (tab === currentTab) updateChrome()
+                if (tab === currentTab) touchBlur(1000L)
                 onTabUpdated(tab)
             }
         }
@@ -1131,7 +1135,10 @@ class MainActivity : AppCompatActivity() {
         wv.webChromeClient = object : WebChromeClient() {
             override fun onProgressChanged(view: WebView?, newProgress: Int) {
                 tab.progress = newProgress
-                if (tab === currentTab) renderProgress()
+                if (tab === currentTab) {
+                    renderProgress()
+                    touchBlur(800L)
+                }
             }
 
             override fun onReceivedTitle(view: WebView?, title: String?) {
