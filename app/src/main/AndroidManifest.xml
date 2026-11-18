@@ -2,8 +2,15 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
     <uses-permission android:name="android.permission.INTERNET" />
+    <!-- 以下權限只在網站真的要求時才會向使用者詢問 -->
+    <uses-permission android:name="android.permission.CAMERA" />
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
+    <!-- Android 9 以下下載檔案到公用資料夾需要 -->
+    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" android:maxSdkVersion="28" />
 
-    <!-- usesCleartextTraffic：允許瀏覽 http 網站（Android 9 起預設禁止） -->
+    <!-- usesCleartextTraffic：允許 http 網站（Android 9 以上預設會擋） -->
     <application
         android:allowBackup="true"
         android:label="@string/app_name"
