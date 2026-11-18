@@ -97,7 +97,8 @@ class MainActivity : AppCompatActivity() {
     private var glassReady = false
     private var glassVisible = true
     private var navInset = 0
-    private var imeInset = 0
+    private var imeScreen = 0 // 鍵盤高度（螢幕座標），鍵盤隱藏時為 0
+    private var urlWinY = 0 // 網址列視窗目前離螢幕底部的距離
     private var statusTop = 0
     private var scrollHidden = false
     private var findMode = false
@@ -187,7 +188,7 @@ class MainActivity : AppCompatActivity() {
         urlEdit = EditText(this).apply {
             setTextColor(textColor)
             setHintTextColor(pal.hint)
-            textSize = 16f
+            textSize = 15f
             typeface = Typeface.DEFAULT_BOLD
             gravity = Gravity.CENTER
             background = null
@@ -205,7 +206,7 @@ class MainActivity : AppCompatActivity() {
             gravity = Gravity.CENTER_VERTICAL
             setPadding(dp(16), 0, dp(4), 0)
             addView(urlEdit, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
-            addView(reloadIcon, LinearLayout.LayoutParams(dp(42), dp(42)))
+            addView(reloadIcon, LinearLayout.LayoutParams(dp(36), dp(36)))
         }
 
         // 尋找模式使用同一個位置：網址列切換成搜尋列
@@ -235,15 +236,15 @@ class MainActivity : AppCompatActivity() {
             addView(findCounter, LinearLayout.LayoutParams(dp(48), ViewGroup.LayoutParams.WRAP_CONTENT))
             addView(
                 iconOf(Ico.UP, textColor, R.string.find_prev_desc) { findStep(false) },
-                LinearLayout.LayoutParams(dp(40), dp(40))
+                LinearLayout.LayoutParams(dp(34), dp(34))
             )
             addView(
                 iconOf(Ico.DOWN, textColor, R.string.find_next_desc) { findStep(true) },
-                LinearLayout.LayoutParams(dp(40), dp(40))
+                LinearLayout.LayoutParams(dp(34), dp(34))
             )
             addView(
                 iconOf(Ico.CLOSE, textColor, R.string.find_close_desc) { exitFind() },
-                LinearLayout.LayoutParams(dp(40), dp(40))
+                LinearLayout.LayoutParams(dp(34), dp(34))
             )
         }
         urlPill = FrameLayout(this).apply {
@@ -321,9 +322,16 @@ class MainActivity : AppCompatActivity() {
                 false
             }
         }
-        // 鍵盤出現時，兩列一起往上移到鍵盤上方
+        // 鍵盤出現時，兩列一起往上移到鍵盤上方。視窗回報的是「與鍵盤重疊的高度」，
+        // 要加上視窗本身離底部的距離才是螢幕上的鍵盤高度；移到鍵盤上方後不再重疊，就沿用已量到的高度。
         ViewCompat.setOnApplyWindowInsetsListener(urlPill) { _, insets ->
-            imeInset = insets.getInsets(WindowInsetsCompat.Type.ime()).bottom
+            val type = WindowInsetsCompat.Type.ime()
+            if (!insets.isVisible(type)) {
+                imeScreen = 0
+            } else {
+                val overlap = insets.getInsets(type).bottom
+                if (overlap > 0) imeScreen = overlap + urlWinY
+            }
             placeGlass()
             insets
         }
@@ -342,12 +350,53 @@ class MainActivity : AppCompatActivity() {
             setOnClickListener { onTap() }
         }
 
-    private fun pillDrawable(heightPx: Int, fill: Int, stroke: Int): GradientDrawable =
-        GradientDrawable().apply {
-            setColor(fill)
-            cornerRadius = heightPx / 2f
-            setStroke(dp(1), stroke)
+    private fun pillDrawable(heightPx: Int, fill: Int, stroke: Int): FrostedDrawable =
+        FrostedDrawable(fill, stroke, heightPx / 2f, dp(1).toFloat())
+
+    // ---------- 模糊備案 ----------
+    // 系統視窗模糊不可用時（Android 11 以下，或系統關閉了模糊），擷取膠囊後方的網頁，縮小後再放大，畫面就會變模糊
+
+    private val blurHandler = android.os.Handler(android.os.Looper.getMainLooper())
+    private val blurRefresh = Runnable { refreshBlur() }
+
+    /** 網頁捲動、玻璃列移動後，稍等一下再重新擷取（連續捲動只擷取一次） */
+    private fun scheduleBlur() {
+        if (blurSupported || !glassReady) return
+        blurHandler.removeCallbacks(blurRefresh)
+        blurHandler.postDelayed(blurRefresh, 120L)
+    }
+
+    private fun refreshBlur() {
+        val wv = currentWebView ?: return
+        if (!glassVisible || wv.width == 0) return
+        for (pill in listOf(urlPill, navPill)) {
+            val frost = pill.background as? FrostedDrawable ?: continue
+            frost.blur = captureBehind(wv, pill)
         }
+    }
+
+    /** 把網頁中、膠囊後方的那一小塊畫到縮小過的圖上 */
+    private fun captureBehind(wv: WebView, pill: View): android.graphics.Bitmap? {
+        if (pill.width == 0 || pill.height == 0) return null
+        return try {
+            val wLoc = IntArray(2)
+            val pLoc = IntArray(2)
+            wv.getLocationOnScreen(wLoc)
+            pill.getLocationOnScreen(pLoc)
+            val bmp = android.graphics.Bitmap.createBitmap(
+                maxOf(1, (pill.width * BLUR_SCALE).toInt()),
+                maxOf(1, (pill.height * BLUR_SCALE).toInt()),
+                android.graphics.Bitmap.Config.ARGB_8888
+            )
+            val c = android.graphics.Canvas(bmp)
+            c.scale(BLUR_SCALE, BLUR_SCALE)
+            c.translate(-(pLoc[0] - wLoc[0]).toFloat(), -(pLoc[1] - wLoc[1]).toFloat())
+            wv.draw(c)
+            bmp
+        } catch (e: Exception) {
+            null
+        }
+    }
 
     /** 建立一個玻璃視窗：背景透明，膠囊以外的區域仍可點擊網頁 */
     private fun glassWindow(content: View, heightPx: Int, focusable: Boolean): Dialog {
@@ -382,7 +431,7 @@ class MainActivity : AppCompatActivity() {
 
     /** 依導覽列與鍵盤高度，放好兩列玻璃；第一次時以動畫顯示 */
     private fun placeGlass() {
-        val navY = maxOf(navInset, imeInset) + dp(GLASS_BOTTOM_GAP_DP)
+        val navY = maxOf(navInset, imeScreen) + dp(GLASS_BOTTOM_GAP_DP)
         val urlY = navY + dp(BAR_HEIGHT_DP) + dp(GAP_DP)
         if (navY != lastNavY) {
             setPosition(navDialog, dp(MARGIN_DP), navY)
@@ -391,6 +440,8 @@ class MainActivity : AppCompatActivity() {
         if (urlY != lastUrlY) {
             setPosition(urlDialog, dp(MARGIN_DP), urlY)
             lastUrlY = urlY
+            urlWinY = urlY
+            scheduleBlur()
         }
         if (!glassReady) {
             glassReady = true
@@ -422,6 +473,7 @@ class MainActivity : AppCompatActivity() {
         if (show) {
             if (blurSupported) win.setBackgroundBlurRadius(dp(BLUR_DP))
             dialog.show()
+            scheduleBlur()
             pill.translationY = slide
             pill.alpha = 0f
             pill.animate().translationY(0f).alpha(1f).setDuration(280)
@@ -448,6 +500,7 @@ class MainActivity : AppCompatActivity() {
 
     /** 網頁往下捲動時收起玻璃列，往上捲動或回到頂端時再顯示 */
     private fun onPageScrolled(y: Int, oldY: Int) {
+        scheduleBlur()
         if (findMode || overlayStack.isNotEmpty() || customView != null) return
         val dy = y - oldY
         when {
@@ -1484,11 +1537,12 @@ class MainActivity : AppCompatActivity() {
     }
 
     companion object {
-        private const val BAR_HEIGHT_DP = 52
+        private const val BAR_HEIGHT_DP = 44
         private const val GAP_DP = 6
-        private const val GLASS_BOTTOM_GAP_DP = 12
-        private const val MARGIN_DP = 16
+        private const val GLASS_BOTTOM_GAP_DP = 10
+        private const val MARGIN_DP = 20
         private const val BLUR_DP = 24
+        private const val BLUR_SCALE = 0.1f // 模糊備案：先縮小到 1/10 再擷取
         private const val SHEET_OFFSET_DP = 640
         private val ENGINE_NAMES = arrayOf<CharSequence>("Google", "Bing", "DuckDuckGo")
     }
