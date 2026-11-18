@@ -356,6 +356,85 @@ class MainActivity : AppCompatActivity() {
     // ---------- 模糊備案 ----------
     // 系統視窗模糊不可用時（Android 11 以下，或系統關閉了模糊），擷取膠囊後方的網頁，縮小後再放大，畫面就會變模糊
 
+    // ---------- 即時模糊（Android 8 以上）----------
+    // 捲動時約每 33 毫秒用 PixelCopy 讀出玻璃列後方的畫面，縮小後交給膠囊背景，模糊會跟著網頁內容變化
+
+    private val liveTick = Runnable { liveStep() }
+    private val liveBufs = HashMap<View, android.graphics.Bitmap>()
+    private val liveBusy = HashSet<View>()
+    private val livePaint = android.graphics.Paint(android.graphics.Paint.FILTER_BITMAP_FLAG)
+    private var liveUntil = 0L
+    private var liveRunning = false
+
+    /** 玻璃列需要模糊時呼叫：Android 8 以上即時更新，以下只在捲動停止後更新一次 */
+    private fun touchBlur() {
+        if (blurSupported) return
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) startLiveBlur() else scheduleBlur()
+    }
+
+    /** 捲動時持續更新；停止捲動約 0.4 秒後自動停止，省電 */
+    private fun startLiveBlur() {
+        liveUntil = android.os.SystemClock.uptimeMillis() + 400L
+        if (!liveRunning) {
+            liveRunning = true
+            blurHandler.post(liveTick)
+        }
+    }
+
+    private fun liveStep() {
+        if (!glassVisible || android.os.SystemClock.uptimeMillis() > liveUntil) {
+            liveRunning = false
+            return
+        }
+        updateLiveBlur(urlPill)
+        updateLiveBlur(navPill)
+        blurHandler.postDelayed(liveTick, 33L)
+    }
+
+    private fun updateLiveBlur(pill: View) {
+        if (pill in liveBusy || pill.width == 0 || pill.height == 0) return
+        val frost = pill.background as? FrostedDrawable ?: return
+        val w = pill.width
+        val h = pill.height
+        val full = liveBufs[pill]?.takeIf { it.width == w && it.height == h }
+            ?: android.graphics.Bitmap.createBitmap(w, h, android.graphics.Bitmap.Config.ARGB_8888)
+                .also { liveBufs[pill] = it }
+        val origin = IntArray(2)
+        val at = IntArray(2)
+        window.decorView.getLocationOnScreen(origin)
+        pill.getLocationOnScreen(at)
+        val left = at[0] - origin[0]
+        val top = at[1] - origin[1]
+        liveBusy.add(pill)
+        try {
+            android.view.PixelCopy.request(
+                window,
+                android.graphics.Rect(left, top, left + w, top + h),
+                full,
+                { result ->
+                    liveBusy.remove(pill)
+                    if (result == android.view.PixelCopy.SUCCESS) frost.blur = shrink8(full, frost.blur)
+                },
+                blurHandler
+            )
+        } catch (e: Exception) {
+            liveBusy.remove(pill)
+        }
+    }
+
+    /** 把讀到的畫面縮到 1/8；盡量沿用同一張小圖，減少記憶體配置 */
+    private fun shrink8(full: android.graphics.Bitmap, reuse: android.graphics.Bitmap?): android.graphics.Bitmap {
+        val w = maxOf(1, full.width / 8)
+        val h = maxOf(1, full.height / 8)
+        val out = if (reuse != null && reuse.width == w && reuse.height == h) {
+            reuse
+        } else {
+            android.graphics.Bitmap.createBitmap(w, h, android.graphics.Bitmap.Config.ARGB_8888)
+        }
+        android.graphics.Canvas(out).drawBitmap(full, null, android.graphics.Rect(0, 0, w, h), livePaint)
+        return out
+    }
+
     private val blurHandler = android.os.Handler(android.os.Looper.getMainLooper())
     private val blurRefresh = Runnable { refreshBlur() }
 
@@ -441,7 +520,7 @@ class MainActivity : AppCompatActivity() {
             setPosition(urlDialog, dp(MARGIN_DP), urlY)
             lastUrlY = urlY
             urlWinY = urlY
-            scheduleBlur()
+            touchBlur()
         }
         if (!glassReady) {
             glassReady = true
@@ -471,9 +550,11 @@ class MainActivity : AppCompatActivity() {
         pill.animate().cancel()
         val slide = dp(28).toFloat()
         if (show) {
+            if (!dialog.isShowing) dialog.show() // 視窗只建立一次，之後都用動畫顯示與隱藏
+            win.clearFlags(WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE)
             if (blurSupported) win.setBackgroundBlurRadius(dp(BLUR_DP))
-            dialog.show()
-            scheduleBlur()
+            touchBlur()
+            pill.visibility = View.VISIBLE
             pill.translationY = slide
             pill.alpha = 0f
             pill.animate().translationY(0f).alpha(1f).setDuration(280)
@@ -482,7 +563,13 @@ class MainActivity : AppCompatActivity() {
             if (blurSupported) win.setBackgroundBlurRadius(0)
             pill.animate().translationY(slide).alpha(0f).setDuration(200)
                 .setInterpolator(AccelerateInterpolator(1.2f))
-                .withEndAction { if (!glassVisible) dialog.hide() }
+                .withEndAction {
+                    if (!glassVisible) {
+                        pill.visibility = View.INVISIBLE
+                        // 隱藏後視窗不接收觸控，點擊與捲動直接穿透到網頁
+                        win.addFlags(WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE)
+                    }
+                }
                 .start()
         }
     }
@@ -500,7 +587,7 @@ class MainActivity : AppCompatActivity() {
 
     /** 網頁往下捲動時收起玻璃列，往上捲動或回到頂端時再顯示 */
     private fun onPageScrolled(y: Int, oldY: Int) {
-        scheduleBlur()
+        touchBlur()
         if (findMode || overlayStack.isNotEmpty() || customView != null) return
         val dy = y - oldY
         when {
