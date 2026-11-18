@@ -723,6 +723,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun showSwitcher() {
         if (overlayStack.isNotEmpty()) return
+        currentTab?.let { capturePreview(it) } // 開啟總覽前，先更新目前分頁的預覽
         val panel = TabSwitcherPanel(
             this,
             pal,
@@ -965,6 +966,24 @@ class MainActivity : AppCompatActivity() {
         return tab
     }
 
+    /** 把分頁目前的畫面縮成小圖，給分頁總覽的卡片當預覽（取頂端的一塊） */
+    private fun capturePreview(tab: BrowserTab) {
+        val wv = tab.webView ?: return
+        if (wv.width == 0 || wv.height == 0) return
+        val pw = dp(PREVIEW_W_DP)
+        val ph = dp(PREVIEW_H_DP)
+        val s = pw.toFloat() / wv.width
+        try {
+            val bmp = android.graphics.Bitmap.createBitmap(pw, ph, android.graphics.Bitmap.Config.RGB_565)
+            val c = android.graphics.Canvas(bmp)
+            c.scale(s, s)
+            wv.draw(c)
+            tab.preview = bmp
+        } catch (e: Exception) {
+            // 擷取失敗時沿用舊的預覽
+        }
+    }
+
     /**
      * 切換分頁。新頁面從左或右滑入、舊頁面反方向滑出並淡出；
      * 離開的分頁會暫停（onPause），回到它時再恢復（onResume）。
@@ -974,6 +993,7 @@ class MainActivity : AppCompatActivity() {
         if (findMode) exitFind()
         val target = tabs[index]
         val old = currentWebView
+        if (old != null) currentTab?.let { capturePreview(it) } // 離開前先記下目前分頁的畫面
         val forward = index > currentIndex
         currentIndex = index
         scrollHidden = false
@@ -1624,6 +1644,8 @@ class MainActivity : AppCompatActivity() {
         private const val GLASS_BOTTOM_GAP_DP = 10
         private const val MARGIN_DP = 20
         private const val BLUR_DP = 24
+        private const val PREVIEW_W_DP = 160 // 分頁預覽圖的大小（dp）
+        private const val PREVIEW_H_DP = 120
         private const val SHEET_OFFSET_DP = 640
         private val ENGINE_NAMES = arrayOf<CharSequence>("Google", "Bing", "DuckDuckGo")
     }
