@@ -56,4 +56,7 @@
     <string name="data_cleared">已清除瀏覽資料</string>
     <string name="download_started">開始下載</string>
     <string name="download_failed">下載失敗，請稍後再試</string>
+    <string name="start_title">起始畫面</string>
+    <string name="start_heading">喜好項目</string>
+    <string name="start_empty">加入書籤後，會顯示在這裡</string>
 </resources>
