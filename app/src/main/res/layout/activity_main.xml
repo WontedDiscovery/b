@@ -1,14 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- 全螢幕網頁；懸浮的玻璃工具列在 toolbar_glass.xml，以獨立視窗顯示 -->
+<!-- 網頁、疊層面板都在這裡；玻璃網址列與導覽列以獨立視窗顯示（見 MainActivity） -->
 <FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
     android:id="@+id/root"
     android:layout_width="match_parent"
     android:layout_height="match_parent">
-
-    <WebView
-        android:id="@+id/webView"
-        android:layout_width="match_parent"
-        android:layout_height="match_parent" />
 
     <ProgressBar
         android:id="@+id/progressBar"
@@ -17,6 +12,19 @@
         android:layout_height="3dp"
         android:layout_gravity="top"
         android:max="100"
+        android:visibility="gone" />
+
+    <FrameLayout
+        android:id="@+id/overlayContainer"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:visibility="gone" />
+
+    <FrameLayout
+        android:id="@+id/fullscreenContainer"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:background="#000000"
         android:visibility="gone" />
 
 </FrameLayout>
