@@ -1,6 +1,12 @@
 package com.example.webbrowser
 
 import android.content.Context
+import android.graphics.Bitmap
+import android.graphics.Canvas
+import android.graphics.Matrix
+import android.graphics.Paint
+import android.graphics.Path
+import android.graphics.RectF
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
 import android.net.Uri
@@ -126,7 +132,7 @@ class TabCardAdapter(
     private val onClose: (Int) -> Unit
 ) : RecyclerView.Adapter<TabCardAdapter.Holder>() {
 
-    class Holder(val card: LinearLayout, val title: TextView, val url: TextView) :
+    class Holder(val card: LinearLayout, val title: TextView, val url: TextView, val preview: PreviewView) :
         RecyclerView.ViewHolder(card)
 
     override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): Holder {
@@ -157,10 +163,18 @@ class TabCardAdapter(
             addView(title, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
             addView(close, LinearLayout.LayoutParams(ctx.dp(32), ctx.dp(32)))
         }
+        val preview = PreviewView(ctx)
         val card = LinearLayout(ctx).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(ctx.dp(12), ctx.dp(6), ctx.dp(6), ctx.dp(12))
             addView(top)
+            addView(
+                preview,
+                LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f).apply {
+                    topMargin = ctx.dp(8)
+                    bottomMargin = ctx.dp(8)
+                }
+            )
             addView(
                 url,
                 LinearLayout.LayoutParams(
@@ -171,10 +185,10 @@ class TabCardAdapter(
         }
         card.layoutParams = RecyclerView.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT,
-            ctx.dp(150)
+            ctx.dp(200)
         ).apply { setMargins(ctx.dp(6), ctx.dp(6), ctx.dp(6), ctx.dp(6)) }
 
-        val holder = Holder(card, title, url)
+        val holder = Holder(card, title, url, preview)
         card.setOnClickListener {
             val p = holder.bindingAdapterPosition
             if (p != RecyclerView.NO_POSITION) onOpen(p)
@@ -191,6 +205,7 @@ class TabCardAdapter(
         val ctx = holder.card.context
         holder.title.text = tab.title.ifEmpty { hostOf(tab.url) }
         holder.url.text = hostOf(tab.url)
+        holder.preview.bitmap = tab.preview
         val current = position == currentIndex()
         holder.card.background = GradientDrawable().apply {
             setColor(pal.card)
@@ -337,5 +352,36 @@ fun buildSheetCard(
                 minOf(maxHeightPx, contentHeight)
             )
         )
+    }
+}
+
+/** 分頁卡片裡的預覽圖：從頂端開始填滿、四角圓角；沒有圖時什麼都不畫 */
+class PreviewView(ctx: Context) : View(ctx) {
+    var bitmap: Bitmap? = null
+        set(value) {
+            field = value
+            invalidate()
+        }
+
+    private val radius = ctx.dp(12).toFloat()
+    private val area = RectF()
+    private val clip = Path()
+    private val drawMatrix = Matrix()
+    private val paint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG)
+
+    override fun onDraw(canvas: Canvas) {
+        val b = bitmap ?: return
+        val w = width.toFloat()
+        val h = height.toFloat()
+        if (w <= 0f || h <= 0f) return
+        area.set(0f, 0f, w, h)
+        clip.reset()
+        clip.addRoundRect(area, radius, radius, Path.Direction.CW)
+        val save = canvas.save()
+        canvas.clipPath(clip)
+        val s = maxOf(w / b.width, h / b.height)
+        drawMatrix.setScale(s, s)
+        canvas.drawBitmap(b, drawMatrix, paint)
+        canvas.restoreToCount(save)
     }
 }
