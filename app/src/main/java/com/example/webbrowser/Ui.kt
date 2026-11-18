@@ -204,7 +204,7 @@ class TabCardAdapter(
         val tab = tabs[position]
         val ctx = holder.card.context
         holder.title.text = tab.title.ifEmpty { hostOf(tab.url) }
-        holder.url.text = hostOf(tab.url)
+        holder.url.text = if (StartPage.isStart(tab.url)) "" else hostOf(tab.url)
         holder.preview.bitmap = tab.preview
         val current = position == currentIndex()
         holder.card.background = GradientDrawable().apply {
