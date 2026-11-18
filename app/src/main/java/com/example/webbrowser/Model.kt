@@ -1,6 +1,7 @@
 package com.example.webbrowser
 
 import android.content.Context
+import android.graphics.Bitmap
 import android.graphics.Color
 import android.webkit.WebView
 import org.json.JSONArray
@@ -12,6 +13,7 @@ class BrowserTab(var url: String, var title: String) {
     var desktopMode = false
     var loading = false
     var progress = 0
+    var preview: Bitmap? = null // 分頁總覽用的預覽圖，離開分頁或開啟總覽時更新
 }
 
 /** 書籤、歷史紀錄、工作階段共用的一筆資料。 */
