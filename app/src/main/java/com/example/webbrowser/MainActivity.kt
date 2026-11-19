@@ -108,7 +108,7 @@ class MainActivity : AppCompatActivity() {
     private var glassQuietUntil = 0L // 這個時間以前，網頁的捲動不拿來移動玻璃列
     private var baseNavY = -1
     private var baseUrlY = -1
-    private var webBottom = 0 // 網頁區域底部留給玻璃列的高度（px）
+    private val pageLift = java.util.WeakHashMap<WebView, Boolean>() // 每個網頁底部有沒有貼齊的按鈕
     private var navInset = 0
     private var imeVisible = false // 目前拿到焦點的視窗，鍵盤是否顯示中
     private var imeHeight = 0 // 鍵盤高度（螢幕座標），鍵盤收起後仍保留最後量到的值
@@ -621,7 +621,8 @@ class MainActivity : AppCompatActivity() {
             urlWinY = urlY
             touchBlur()
         }
-        setWebBottom(webBottomFor(glassOffset))
+        currentWebView?.let { applyWebBottom(it) }
+        leavingView?.let { applyWebBottom(it) }
         applyGlassWindowState()
         if (!glassReady) {
             glassReady = true
@@ -697,35 +698,55 @@ class MainActivity : AppCompatActivity() {
         if (android.os.SystemClock.uptimeMillis() < glassQuietUntil) return
         val dy = y - oldY
         if (dy == 0 || root.height == 0) return
-        // 玻璃列移開的量，不能超過網頁還能往下捲的距離；超過的話網頁會被迫往上跳
-        val webFull = root.height - statusTop
-        val limit = wv.scrollRange() - webFull + glassTopBase - y
+        // 有底部按鈕的網頁：玻璃列移開的量不能超過網頁還能往下捲的距離，否則網頁會被迫往上跳
+        val limit = if (pageLift[wv] == true) {
+            (wv.scrollRange() - (root.height - statusTop) + glassTopBase - y).toFloat()
+        } else {
+            Float.MAX_VALUE
+        }
         glassAnim?.cancel()
-        setGlassOffset(minOf(glassOffset + dy, limit.toFloat()))
+        setGlassOffset(minOf(glassOffset + dy, limit))
         // 停下來時若已經到了網頁底部，玻璃列回到完整露出，最後幾行才不會被半露的玻璃列擋住
         root.removeCallbacks(glassIdleCheck)
         root.postDelayed(glassIdleCheck, 700L)
     }
 
     private val glassIdleCheck = Runnable {
-        if (currentWebView?.canScrollVertically(1) == false) updateGlassVisibility()
+        val wv = currentWebView ?: return@Runnable
+        checkBottomBar(wv) // 停下來時再確認一次，有些網站的底部按鈕是捲動後才出現
+        if (pageLift[wv] == true && !wv.canScrollVertically(1)) updateGlassVisibility()
     }
 
-    /** 網頁區域底部留給玻璃列的高度：玻璃列露出多少，網頁就讓出多少 */
-    private fun webBottomFor(offset: Float): Int = maxOf(0, glassTopBase - Math.round(offset))
-
-    private fun setWebBottom(px: Int) {
-        if (px == webBottom) return
-        webBottom = px
-        currentWebView?.let { applyWebBottom(it) }
-        leavingView?.let { applyWebBottom(it) }
+    /** 網頁區域底部留給玻璃列的高度：只有有底部按鈕的網頁才讓出來，玻璃列露出多少就讓出多少 */
+    private fun bottomFor(wv: WebView?, offset: Float): Int {
+        if (wv == null || pageLift[wv] != true) return 0
+        return maxOf(0, glassTopBase - Math.round(offset))
     }
 
     private fun applyWebBottom(v: View) {
         val lp = v.layoutParams as? FrameLayout.LayoutParams ?: return
-        if (lp.bottomMargin == webBottom) return
-        lp.bottomMargin = webBottom
+        val want = bottomFor(v as? WebView, glassOffset)
+        if (lp.bottomMargin == want) return
+        lp.bottomMargin = want
         v.layoutParams = lp
+    }
+
+    /** 問網頁底部有沒有貼齊的按鈕（例如 YouTube 底部的導覽列）。有的話，玻璃列會把網頁往上讓出來，按鈕就在玻璃列上方 */
+    private fun checkBottomBar(wv: WebView) {
+        wv.evaluateJavascript(BOTTOM_BAR_JS) { result ->
+            val has = result == "true"
+            if (pageLift[wv] == has) return@evaluateJavascript
+            pageLift[wv] = has
+            glassQuietUntil = android.os.SystemClock.uptimeMillis() + 350L
+            if (glassReady && wv === currentWebView) placeGlass()
+        }
+    }
+
+    /** 網頁載入後幾次檢查：有些網站的按鈕是載入完成後才畫出來的 */
+    private fun scheduleBottomBarCheck(wv: WebView) {
+        for (delay in longArrayOf(400L, 1500L, 4000L)) {
+            wv.postDelayed({ if (tabs.any { it.webView === wv }) checkBottomBar(wv) }, delay)
+        }
     }
 
     /** 玻璃列完全移出螢幕時，視窗不接收觸控也不做模糊，點擊與捲動直接穿透到網頁 */
@@ -1313,6 +1334,8 @@ class MainActivity : AppCompatActivity() {
             }
 
             override fun onPageStarted(view: WebView?, url: String?, favicon: Bitmap?) {
+                view?.let { pageLift[it] = false } // 新頁面先當作沒有底部按鈕，載入後再檢查
+                if (glassReady && view === currentWebView) placeGlass()
                 tab.url = url ?: tab.url
                 tab.loading = true
                 tab.progress = 5
@@ -1324,6 +1347,7 @@ class MainActivity : AppCompatActivity() {
             }
 
             override fun onPageFinished(view: WebView?, url: String?) {
+                view?.let { scheduleBottomBarCheck(it) }
                 tab.loading = false
                 tab.progress = 100
                 tab.url = url ?: tab.url
@@ -1832,6 +1856,23 @@ class MainActivity : AppCompatActivity() {
     }
 
     companion object {
+        // 在視窗底邊附近沿著寬度取 9 個點，往上找有沒有 position: fixed 且貼齊底邊的按鈕或導覽列
+        private const val BOTTOM_BAR_JS = """
+(function () {
+  var h = window.innerHeight, w = window.innerWidth;
+  for (var i = 0; i < 9; i++) {
+    var el = document.elementFromPoint(w * (0.05 + i * 0.1), h - 3);
+    var fixed = false, bar = false;
+    for (var n = el, k = 0; n && k < 60; n = n.parentElement, k++) {
+      var r = n.getBoundingClientRect();
+      if (r.height > 0 && r.height <= h * 0.3 && r.bottom >= h - 4 && r.top < h) bar = true;
+      if (window.getComputedStyle(n).position === 'fixed') fixed = true;
+    }
+    if (fixed && bar) return true;
+  }
+  return false;
+})();
+"""
         private const val BAR_HEIGHT_DP = 44
         private const val GLASS_BOTTOM_GAP_DP = 10
         private const val HIDE_EXTRA_DP = 4
