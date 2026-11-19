@@ -98,13 +98,22 @@ class MainActivity : AppCompatActivity() {
     private lateinit var tabCount: TextView
     private lateinit var tabsButton: FrameLayout
     private var glassReady = false
-    private var glassVisible = true
+    private var glassOffset = 0f // 玻璃列往下移開的距離（px）：0 是完全露出
+    private var glassHideMax = 0 // 玻璃列完全移出螢幕時的位移
+    private var glassTopBase = 0 // 玻璃列沒有移動時，最上緣離螢幕底部的距離（網頁只能排在它上方）
+    private var glassAnim: android.animation.ValueAnimator? = null
+    private var glassTarget = 0f // 動畫要去的位置
+    private var glassHidden = false // 玻璃列已完全移出螢幕
+    private var glassLayoutQueued = false
+    private var glassQuietUntil = 0L // 這個時間以前，網頁的捲動不拿來移動玻璃列
+    private var baseNavY = -1
+    private var baseUrlY = -1
+    private var webBottom = 0 // 網頁區域底部留給玻璃列的高度（px）
     private var navInset = 0
     private var imeVisible = false // 目前拿到焦點的視窗，鍵盤是否顯示中
     private var imeHeight = 0 // 鍵盤高度（螢幕座標），鍵盤收起後仍保留最後量到的值
     private var urlWinY = 0 // 網址列視窗目前離螢幕底部的距離
     private var statusTop = 0
-    private var scrollHidden = false
     private var findMode = false
     private var lastNavY = -1
     private var lastUrlY = -1
@@ -256,7 +265,7 @@ class MainActivity : AppCompatActivity() {
             )
         }
         urlPill = FrameLayout(this).apply {
-            background = pillDrawable(barH, fill, stroke)
+            background = pillDrawable(barH, fill, stroke, flatBottom = true)
             addView(
                 urlRow,
                 FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
@@ -297,7 +306,7 @@ class MainActivity : AppCompatActivity() {
         navPill = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
-            background = pillDrawable(barH, fill, stroke)
+            background = pillDrawable(barH, fill, stroke, flatTop = true)
             addView(backIcon, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f))
             addView(forwardIcon, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f))
             addView(newTabIcon, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f))
@@ -363,8 +372,14 @@ class MainActivity : AppCompatActivity() {
             setOnClickListener { onTap() }
         }
 
-    private fun pillDrawable(heightPx: Int, fill: Int, stroke: Int): FrostedDrawable =
-        FrostedDrawable(fill, stroke, heightPx / 2f, dp(1).toFloat())
+    /** flatTop / flatBottom：該邊改成直角，網址列與導覽列才能緊貼成同一組 */
+    private fun pillDrawable(
+        heightPx: Int,
+        fill: Int,
+        stroke: Int,
+        flatTop: Boolean = false,
+        flatBottom: Boolean = false
+    ): FrostedDrawable = FrostedDrawable(fill, stroke, heightPx / 2f, dp(1).toFloat(), flatTop, flatBottom)
 
     // ---------- 模糊備案 ----------
     // 系統視窗模糊不可用時才使用：擷取膠囊後方的畫面，每 1 dp 一個像素後做方塊模糊（見 FrostBlur.kt）
@@ -385,7 +400,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun refreshBlur() {
         val wv = currentWebView ?: return
-        if (!glassVisible || wv.width == 0) return
+        if (glassHidden || wv.width == 0) return
         for (pill in listOf(urlPill, navPill)) {
             val frost = pill.background as? FrostedDrawable ?: continue
             val shot = captureBehind(wv, pill) ?: continue
@@ -438,7 +453,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun liveStep() {
-        if (!glassVisible || android.os.SystemClock.uptimeMillis() > liveUntil) {
+        if (glassHidden || android.os.SystemClock.uptimeMillis() > liveUntil) {
             liveRunning = false
             return
         }
@@ -493,6 +508,7 @@ class MainActivity : AppCompatActivity() {
         win.setGravity(Gravity.BOTTOM or Gravity.START)
         win.clearFlags(WindowManager.LayoutParams.FLAG_DIM_BEHIND)
         win.addFlags(WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL)
+        win.addFlags(WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS) // 允許玻璃列移到螢幕外，捲動時往下移開
         // 只有網址列需要焦點，導覽列不搶走焦點
         if (!focusable) win.addFlags(WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE)
         win.setSoftInputMode(
@@ -580,8 +596,21 @@ class MainActivity : AppCompatActivity() {
     /** 依導覽列與鍵盤高度，放好兩列玻璃；第一次時以動畫顯示 */
     private fun placeGlass() {
         val keyboard = if (imeVisible) imeHeight else 0 // 鍵盤收起時，玻璃列回到底部
-        val navY = maxOf(navInset, keyboard) + dp(GLASS_BOTTOM_GAP_DP)
-        val urlY = navY + dp(BAR_HEIGHT_DP) + dp(GAP_DP)
+        val navBase = maxOf(navInset, keyboard) + dp(GLASS_BOTTOM_GAP_DP) // 導覽列離螢幕底部的距離
+        val urlBase = navBase + dp(BAR_HEIGHT_DP) // 網址列緊貼在導覽列上方，中間沒有間隔
+        glassTopBase = urlBase + dp(BAR_HEIGHT_DP)
+        glassHideMax = glassTopBase + dp(HIDE_EXTRA_DP)
+        if (!glassReady) glassOffset = glassHideMax.toFloat() // 第一次出現：從螢幕底部滑上來
+        glassOffset = glassOffset.coerceIn(0f, glassHideMax.toFloat())
+        if (navBase != baseNavY || urlBase != baseUrlY) {
+            // 鍵盤或導覽列高度改變，網頁區域會跟著變，這段時間的捲動不是使用者捲動的
+            baseNavY = navBase
+            baseUrlY = urlBase
+            glassQuietUntil = android.os.SystemClock.uptimeMillis() + 350L
+        }
+        val shift = Math.round(glassOffset)
+        val navY = navBase - shift
+        val urlY = urlBase - shift
         if (navY != lastNavY) {
             setPosition(navDialog, dp(MARGIN_DP), navY)
             lastNavY = navY
@@ -592,12 +621,15 @@ class MainActivity : AppCompatActivity() {
             urlWinY = urlY
             touchBlur()
         }
+        setWebBottom(webBottomFor(glassOffset))
+        applyGlassWindowState()
         if (!glassReady) {
             glassReady = true
             root.post {
                 if (!isFinishing && !isDestroyed) {
-                    animateGlass(urlDialog, urlPill, glassVisible)
-                    animateGlass(navDialog, navPill, glassVisible)
+                    if (!urlDialog.isShowing) urlDialog.show() // 視窗只建立一次
+                    if (!navDialog.isShowing) navDialog.show()
+                    updateGlassVisibility()
                 }
             }
         }
@@ -612,65 +644,105 @@ class MainActivity : AppCompatActivity() {
     }
 
     /**
-     * 玻璃列的顯示與隱藏動畫。隱藏時先關掉模糊、內容滑出淡出，最後才真正 hide()，
-     * 避免空的模糊區域殘留在畫面上。
+     * 玻璃列的位置用「往下移開的距離」表示：0 是完全露出，glassHideMax 是完全移出螢幕。
+     * 捲動時 1:1 跟著移動；面板、全螢幕、切換分頁等情況則以動畫滑出或滑回。
      */
-    private fun animateGlass(dialog: Dialog, pill: View, show: Boolean) {
-        val win = dialog.window ?: return
-        pill.animate().cancel()
-        val slide = dp(28).toFloat()
-        if (show) {
-            if (!dialog.isShowing) dialog.show() // 視窗只建立一次，之後都用動畫顯示與隱藏
-            win.clearFlags(WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE)
-            if (blurSupported) win.setBackgroundBlurRadius(dp(BLUR_DP))
-            touchBlur()
-            pill.visibility = View.VISIBLE
-            pill.translationY = slide
-            pill.alpha = 0f
-            pill.animate().translationY(0f).alpha(1f).setDuration(280)
-                .setInterpolator(DecelerateInterpolator(1.6f)).start()
-        } else {
-            if (blurSupported) win.setBackgroundBlurRadius(0)
-            pill.animate().translationY(slide).alpha(0f).setDuration(200)
-                .setInterpolator(AccelerateInterpolator(1.2f))
-                .withEndAction {
-                    if (!glassVisible) {
-                        pill.visibility = View.INVISIBLE
-                        // 隱藏後視窗不接收觸控，點擊與捲動直接穿透到網頁
-                        win.addFlags(WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE)
-                    }
-                }
-                .start()
+    private fun animateGlassTo(hidden: Boolean) {
+        val target = if (hidden) glassHideMax.toFloat() else 0f
+        val running = glassAnim?.isRunning == true
+        if (!running && glassOffset == target) return
+        if (running && glassTarget == target) return
+        glassTarget = target
+        glassAnim?.cancel()
+        glassAnim = android.animation.ValueAnimator.ofFloat(glassOffset, target).apply {
+            duration = 260L
+            interpolator = DecelerateInterpolator(1.4f)
+            addUpdateListener {
+                glassQuietUntil = android.os.SystemClock.uptimeMillis() + 350L
+                setGlassOffset(it.animatedValue as Float)
+            }
+            start()
         }
     }
 
-    /** 有面板、全螢幕影片、或網頁往下捲動時，玻璃列收起來 */
+    private fun setGlassOffset(v: Float) {
+        glassOffset = v.coerceIn(0f, glassHideMax.toFloat())
+        scheduleGlassLayout()
+    }
+
+    /** 捲動時每一個事件都會改位置，這裡合併成下一個畫面更新時只排一次 */
+    private fun scheduleGlassLayout() {
+        if (glassLayoutQueued) return
+        glassLayoutQueued = true
+        root.postOnAnimation {
+            glassLayoutQueued = false
+            if (!isFinishing && !isDestroyed) placeGlass()
+        }
+    }
+
+    /** 有面板或全螢幕影片時收起玻璃列，其餘情況露出 */
     private fun updateGlassVisibility() {
-        val visible = overlayStack.isEmpty() && customView == null && !scrollHidden
-        if (visible == glassVisible) return
-        glassVisible = visible
-        if (glassReady) {
-            animateGlass(urlDialog, urlPill, visible)
-            animateGlass(navDialog, navPill, visible)
-        }
+        animateGlassTo(hidden = overlayStack.isNotEmpty() || customView != null)
     }
 
-    /** 網頁往下捲動時收起玻璃列，往上捲動或回到頂端時再顯示 */
-    private fun onPageScrolled(y: Int, oldY: Int) {
+    /** 網頁捲動時，玻璃列跟著移開或回來；網頁底部永遠停在玻璃列的上緣，不會被遮住 */
+    private fun onPageScrolled(wv: ScrollWebView, y: Int, oldY: Int) {
         touchBlur()
         if (findMode || overlayStack.isNotEmpty() || customView != null) return
-        val dy = y - oldY
-        when {
-            y < dp(60) -> setScrollHidden(false)
-            dy > dp(8) -> setScrollHidden(true)
-            dy < -dp(6) -> setScrollHidden(false)
+        if (y < dp(60)) {
+            animateGlassTo(hidden = false) // 回到頁首：玻璃列回來
+            return
         }
+        // 鍵盤或導覽列剛改變高度時，系統可能會自動捲動一下，這段時間的捲動不拿來移動玻璃列
+        if (android.os.SystemClock.uptimeMillis() < glassQuietUntil) return
+        val dy = y - oldY
+        if (dy == 0 || root.height == 0) return
+        // 玻璃列移開的量，不能超過網頁還能往下捲的距離；超過的話網頁會被迫往上跳
+        val webFull = root.height - statusTop
+        val limit = wv.scrollRange() - webFull + glassTopBase - y
+        glassAnim?.cancel()
+        setGlassOffset(minOf(glassOffset + dy, limit.toFloat()))
+        // 停下來時若已經到了網頁底部，玻璃列回到完整露出，最後幾行才不會被半露的玻璃列擋住
+        root.removeCallbacks(glassIdleCheck)
+        root.postDelayed(glassIdleCheck, 700L)
     }
 
-    private fun setScrollHidden(hidden: Boolean) {
-        if (scrollHidden == hidden) return
-        scrollHidden = hidden
-        updateGlassVisibility()
+    private val glassIdleCheck = Runnable {
+        if (currentWebView?.canScrollVertically(1) == false) updateGlassVisibility()
+    }
+
+    /** 網頁區域底部留給玻璃列的高度：玻璃列露出多少，網頁就讓出多少 */
+    private fun webBottomFor(offset: Float): Int = maxOf(0, glassTopBase - Math.round(offset))
+
+    private fun setWebBottom(px: Int) {
+        if (px == webBottom) return
+        webBottom = px
+        currentWebView?.let { applyWebBottom(it) }
+        leavingView?.let { applyWebBottom(it) }
+    }
+
+    private fun applyWebBottom(v: View) {
+        val lp = v.layoutParams as? FrameLayout.LayoutParams ?: return
+        if (lp.bottomMargin == webBottom) return
+        lp.bottomMargin = webBottom
+        v.layoutParams = lp
+    }
+
+    /** 玻璃列完全移出螢幕時，視窗不接收觸控也不做模糊，點擊與捲動直接穿透到網頁 */
+    private fun applyGlassWindowState() {
+        val hidden = glassOffset >= glassHideMax - 1f
+        if (hidden == glassHidden) return
+        glassHidden = hidden
+        for (dialog in listOf(urlDialog, navDialog)) {
+            val win = dialog.window ?: continue
+            if (hidden) {
+                win.addFlags(WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE)
+            } else {
+                win.clearFlags(WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE)
+            }
+            if (blurSupported) win.setBackgroundBlurRadius(if (hidden) 0 else dp(BLUR_DP))
+        }
+        if (!hidden) touchBlur()
     }
 
     // ---------- 疊層面板：從底部滑上來、往下滑走 ----------
@@ -1095,7 +1167,6 @@ class MainActivity : AppCompatActivity() {
         if (old != null) currentTab?.let { capturePreview(it) } // 離開前先記下目前分頁的畫面
         val forward = index > currentIndex
         currentIndex = index
-        scrollHidden = false
 
         val existing = target.webView
         val wv = existing ?: createWebView(target)
@@ -1110,6 +1181,7 @@ class MainActivity : AppCompatActivity() {
         if (wv.parent !== root) {
             root.addView(wv, 0, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
         }
+        applyWebBottom(wv)
         wv.animate().cancel()
         wv.onResume()
         val width = resources.displayMetrics.widthPixels.toFloat()
@@ -1193,7 +1265,7 @@ class MainActivity : AppCompatActivity() {
 
     /** 建立一個網頁（WebView），並設定它的所有回呼 */
     private fun createWebView(tab: BrowserTab): WebView {
-        val wv = WebView(this)
+        val wv = ScrollWebView(this)
         wv.setBackgroundColor(pal.bg)
         wv.settings.apply {
             javaScriptEnabled = true
@@ -1245,7 +1317,6 @@ class MainActivity : AppCompatActivity() {
                 tab.loading = true
                 tab.progress = 5
                 if (tab === currentTab) {
-                    scrollHidden = false
                     updateChrome()
                     updateGlassVisibility()
                     touchBlur(800L)
@@ -1370,7 +1441,7 @@ class MainActivity : AppCompatActivity() {
         }
 
         wv.setOnScrollChangeListener { _, _, y, _, oldY ->
-            if (tab === currentTab) onPageScrolled(y, oldY)
+            if (tab === currentTab) onPageScrolled(wv, y, oldY)
         }
 
         // 長按連結或圖片：跳出選單
@@ -1566,7 +1637,6 @@ class MainActivity : AppCompatActivity() {
     private fun enterFind() {
         if (findMode || currentWebView == null) return
         findMode = true
-        scrollHidden = false
         updateGlassVisibility()
         switchPillMode()
         findEdit.setText("")
@@ -1763,8 +1833,8 @@ class MainActivity : AppCompatActivity() {
 
     companion object {
         private const val BAR_HEIGHT_DP = 44
-        private const val GAP_DP = 6
         private const val GLASS_BOTTOM_GAP_DP = 10
+        private const val HIDE_EXTRA_DP = 4
         private const val MARGIN_DP = 20
         private const val BLUR_DP = 24
         private const val PREVIEW_W_DP = 160 // 分頁預覽圖的大小（dp）
@@ -1772,4 +1842,9 @@ class MainActivity : AppCompatActivity() {
         private const val SHEET_OFFSET_DP = 640
         private val ENGINE_NAMES = arrayOf<CharSequence>("Google", "Bing", "DuckDuckGo")
     }
+}
+
+/** 網頁畫面：多開放一個讀取捲動範圍的方法（WebView 原本的 computeVerticalScrollRange 是 protected） */
+private class ScrollWebView(context: Context) : WebView(context) {
+    fun scrollRange(): Int = computeVerticalScrollRange()
 }
