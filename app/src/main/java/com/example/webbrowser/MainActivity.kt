@@ -164,6 +164,8 @@ class MainActivity : AppCompatActivity() {
         blurSupported = Build.VERSION.SDK_INT >= Build.VERSION_CODES.S &&
             windowManager.isCrossWindowBlurEnabled
         pal = Palette(night, blurSupported)
+        // 暫時的測試提示：顯示目前用的是系統模糊還是備用模糊，確認後會移除
+        android.widget.Toast.makeText(this, if (blurSupported) "模糊：系統" else "模糊：備用", android.widget.Toast.LENGTH_SHORT).show()
 
         window.statusBarColor = Color.TRANSPARENT
         window.navigationBarColor = Color.TRANSPARENT
@@ -429,13 +431,13 @@ class MainActivity : AppCompatActivity() {
     }
 
     // ---------- 即時模糊（Android 8 以上）----------
-    // 捲動時約每 33 毫秒用 PixelCopy 讀出膠囊後方的畫面，再經 FrostBlur 模糊，模糊會跟著網頁內容變化
+    // 捲動時每一幀用 PixelCopy 讀出膠囊後方的畫面（跟著螢幕更新率），再經 FrostBlur 模糊，模糊會跟著網頁內容變化
 
     private val liveTick = Runnable { liveStep() }
-    private val liveBufs = HashMap<View, android.graphics.Bitmap>()
-    private val liveBusy = HashSet<View>()
+    private val liveSlots = HashMap<View, LiveSlots>()
     private var liveUntil = 0L
     private var liveRunning = false
+    private var liveLastAt = 0L
 
     /** 玻璃列需要模糊時呼叫：Android 8 以上即時更新，以下改為停止捲動後更新一次 */
     private fun touchBlur(boostMs: Long = 400L) {
@@ -448,7 +450,7 @@ class MainActivity : AppCompatActivity() {
         liveUntil = maxOf(liveUntil, android.os.SystemClock.uptimeMillis() + durationMs)
         if (!liveRunning) {
             liveRunning = true
-            blurHandler.post(liveTick)
+            window.decorView.postOnAnimation(liveTick) // 跟著螢幕的更新節奏取畫面
         }
     }
 
@@ -457,39 +459,47 @@ class MainActivity : AppCompatActivity() {
             liveRunning = false
             return
         }
-        updateLiveBlur(urlPill)
-        updateLiveBlur(navPill)
-        blurHandler.postDelayed(liveTick, 33L)
+        val now = android.os.SystemClock.uptimeMillis()
+        if (now - liveLastAt >= LIVE_FRAME_MS) {
+            liveLastAt = now
+            updateLiveBlur(urlPill)
+            updateLiveBlur(navPill)
+        }
+        window.decorView.postOnAnimation(liveTick)
     }
 
+    /** 讀出膠囊後方的畫面並模糊。同一個膠囊可以同時有好幾次讀取在途，等一張圖的時間不會變成掉幀 */
     private fun updateLiveBlur(pill: View) {
-        if (pill in liveBusy || pill.width == 0 || pill.height == 0) return
+        if (pill.width == 0 || pill.height == 0) return
         val frost = pill.background as? FrostedDrawable ?: return
         val w = pill.width
         val h = pill.height
-        val full = liveBufs[pill]?.takeIf { it.width == w && it.height == h }
+        val slots = liveSlots.getOrPut(pill) { LiveSlots(LIVE_INFLIGHT) }
+        val i = slots.busy.indexOfFirst { !it }
+        if (i < 0) return // 讀取都還沒完成，這一幀先略過
+        val buf = slots.bmps[i]?.takeIf { it.width == w && it.height == h }
             ?: android.graphics.Bitmap.createBitmap(w, h, android.graphics.Bitmap.Config.ARGB_8888)
-                .also { liveBufs[pill] = it }
+                .also { slots.bmps[i] = it }
         val origin = IntArray(2)
         val at = IntArray(2)
         window.decorView.getLocationOnScreen(origin)
         pill.getLocationOnScreen(at)
         val left = at[0] - origin[0]
         val top = at[1] - origin[1]
-        liveBusy.add(pill)
+        slots.busy[i] = true
         try {
             android.view.PixelCopy.request(
                 window,
                 android.graphics.Rect(left, top, left + w, top + h),
-                full,
+                buf,
                 { result ->
-                    liveBusy.remove(pill)
-                    if (result == android.view.PixelCopy.SUCCESS) frost.blur = blurFor(pill).blur(full)
+                    slots.busy[i] = false
+                    if (result == android.view.PixelCopy.SUCCESS) frost.blur = blurFor(pill).blur(buf)
                 },
                 blurHandler
             )
         } catch (e: Exception) {
-            liveBusy.remove(pill)
+            slots.busy[i] = false
         }
     }
 
@@ -1856,6 +1866,8 @@ class MainActivity : AppCompatActivity() {
     }
 
     companion object {
+        private const val LIVE_INFLIGHT = 4 // 同時最多幾次讀取在途：讀取有延遲，多排幾次才跟得上 90Hz 的畫面
+        private const val LIVE_FRAME_MS = 10L // 讀取的最小間隔：90Hz 螢幕每一幀都讀，120Hz 螢幕則約每秒 60 次
         // 在視窗底邊附近沿著寬度取 9 個點，往上找有沒有 position: fixed 且貼齊底邊的按鈕或導覽列
         private const val BOTTOM_BAR_JS = """
 (function () {
@@ -1888,4 +1900,10 @@ class MainActivity : AppCompatActivity() {
 /** 網頁畫面：多開放一個讀取捲動範圍的方法（WebView 原本的 computeVerticalScrollRange 是 protected） */
 private class ScrollWebView(context: Context) : WebView(context) {
     fun scrollRange(): Int = computeVerticalScrollRange()
+}
+
+/** 即時模糊的讀取緩衝區：每個緩衝區在讀取完成前不會被再次使用 */
+private class LiveSlots(n: Int) {
+    val bmps = arrayOfNulls<android.graphics.Bitmap>(n)
+    val busy = BooleanArray(n)
 }
